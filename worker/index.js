@@ -6,7 +6,7 @@ import { DurableObject } from "cloudflare:workers";
 const DEFAULT_CATEGORIES = ["Travel", "Rent", "Food", "Groceries", "Domestic Help", "Bills", "Shopping", "Health"];
 const DEFAULT_INCOME = ["Salary", "Freelance", "Interest", "Other"];
 const KINDS = ["expense", "income"];
-const MODES = ["UPI", "Card", "Cash", "Auto-debit"];
+const MODES = ["UPI", "Credit card", "Debit card", "Cash", "Auto-debit"];
 const MAX_FAILS = 8;               // wrong PINs allowed before a lockout
 const LOCK_MS = 15 * 60 * 1000;    // lockout length
 
@@ -38,6 +38,8 @@ export class Store extends DurableObject {
       if (n === 0) names.forEach((name, i) =>
         this.sql.exec(`INSERT INTO categories (name, kind, budget, pos) VALUES (?, ?, 0, ?)`, name, kind, i));
     };
+    // v3: "Card" was split into Credit card / Debit card; old card entries were debit.
+    this.sql.exec(`UPDATE expenses SET mode = 'Debit card' WHERE mode = 'Card'`);
     seed("expense", DEFAULT_CATEGORIES);
     seed("income", DEFAULT_INCOME);
   }
@@ -124,7 +126,8 @@ function validExpense(body) {
   const id = cleanText(body.id, 64);
   const category = cleanText(body.category, 40);
   const kind = KINDS.includes(body.kind) ? body.kind : "expense";
-  const mode = kind === "income" ? "" : MODES.includes(body.mode) ? body.mode : null;
+  const m = body.mode === "Card" ? "Debit card" : body.mode; // older app versions
+  const mode = kind === "income" ? "" : MODES.includes(m) ? m : null;
   if (!id || !category || mode === null) return null;
   if (!Number.isFinite(amount) || amount <= 0 || amount > 100000000) return null;
   if (!Number.isFinite(ts) || ts < 946684800000 || ts > Date.now() + 366 * 864e5) return null;

@@ -33,7 +33,7 @@
   .field { height:44px; border-radius:12px; border:1px solid var(--line); background:var(--card); padding:0 14px; font-size:16px; width:100%; min-width:0; }
   label.f { display:flex; flex-direction:column; gap:6px; font-size:12px; color:var(--muted); }
   .chips { display:grid; grid-template-columns:repeat(4, minmax(0,1fr)); gap:8px; }
-  .chip { min-height:48px; border-radius:14px; border:1px solid var(--line); background:var(--card); font-size:13px; font-weight:500; line-height:1.15; padding:4px; }
+  .chip { min-height:42px; border-radius:14px; border:1px solid var(--line); background:var(--card); font-size:13px; font-weight:500; line-height:1.15; padding:4px; }
   .chip.on { border-color:var(--accent); background:#2A2418; }
   .inc { --accent:#5EC4B6; } .inc .chip.on { background:#16302C; }
   .seg { display:flex; background:var(--card); border-radius:22px; padding:4px; gap:4px; }
@@ -41,10 +41,10 @@
   .seg button.on { background:var(--accent); color:#111317; }
   .chip.new { border-style:dashed; background:transparent; color:var(--dim); }
   .modes { display:flex; gap:8px; }
-  .mode { flex:1 1 auto; white-space:nowrap; padding:0 10px; height:40px; border-radius:20px; border:1px solid var(--line); background:transparent; font-size:13px; font-weight:500; }
+  .mode { white-space:nowrap; padding:0 6px; height:36px; border-radius:20px; border:1px solid var(--line); background:transparent; font-size:13px; font-weight:500; }
   .mode.on { background:var(--line); border-color:var(--muted); }
   .keys { display:grid; grid-template-columns:repeat(3, minmax(0,1fr)); gap:8px; }
-  .key { height:46px; border-radius:14px; border:none; background:var(--card); font-size:24px; font-weight:500; }
+  .key { height:40px; border-radius:14px; border:none; background:var(--card); font-size:24px; font-weight:500; }
   .key:active { background:var(--line); }
   .entry { display:flex; justify-content:space-between; align-items:center; padding:10px 0; border-bottom:1px solid var(--soft); width:100%; background:none; border-left:none; border-right:none; border-top:none; text-align:left; }
   .entry small { display:block; font-size:12px; color:var(--muted); margin-top:2px; }
@@ -86,7 +86,9 @@ let cfg = LS.get("em.cfg", null);           // { api, pin }
 let queue = LS.get("em.queue", []);          // expenses saved while offline
 let cats = LS.get("em.cats", []);            // expense categories [{name, budget}]
 let incCats = LS.get("em.incCats", []);      // income categories [{name}]
-const APP_VERSION = "1.4";
+const APP_VERSION = "1.5";
+const MODES = ["UPI", "Credit card", "Debit card", "Cash", "Auto-debit"];
+const isCC = (e) => !isInc(e) && e.mode === "Credit card";
 const isInc = (e) => e.kind === "income";
 const spends = (l) => l.filter((e) => !isInc(e));
 const incomes = (l) => l.filter(isInc);
@@ -210,6 +212,7 @@ function sum(list) { return list.reduce((s, e) => s + e.amount, 0); }
 
 function monthView() {
   const spent = sum(spends(state.expenses)), income = sum(incomes(state.expenses));
+  const onCC = sum(state.expenses.filter(isCC)), fromAccount = spent - onCC;
   const budget = cats.reduce((s, c) => s + (c.budget || 0), 0);
   const isNow = sameMonth(state.view, new Date());
   const now = new Date();
@@ -230,10 +233,12 @@ function monthView() {
       <button class="ghost" data-act="nextMonth" aria-label="Next month" ${isNow ? "disabled style='opacity:.3'" : ""}>›</button></div>
     ${income ? `<div class="card">
       <span class="muted" style="font-size:13px">Left this month</span>
-      <span class="big" style="font-size:40px;color:${income - spent < 0 ? "var(--over)" : "var(--ok)"}">${income - spent < 0 ? "−" : ""}${inr(Math.abs(income - spent))}</span>
-      <div style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px">
-        <div><span class="muted" style="font-size:12px;display:block">Income</span><span style="font-size:17px;font-weight:600">${inr(income)}</span></div>
-        <div><span class="muted" style="font-size:12px;display:block">Spent</span><span style="font-size:17px;font-weight:600">${inr(spent)}</span></div></div>
+      <span class="big" style="font-size:40px;color:${income - fromAccount < 0 ? "var(--over)" : "var(--ok)"}">${income - fromAccount < 0 ? "−" : ""}${inr(Math.abs(income - fromAccount))}</span>
+      <div style="display:grid;grid-template-columns:repeat(${onCC ? 3 : 2},minmax(0,1fr));gap:10px">
+        <div><span class="muted" style="font-size:12px;display:block">Income</span><span style="font-size:16px;font-weight:600">${inr(income)}</span></div>
+        <div><span class="muted" style="font-size:12px;display:block">${onCC ? "Paid from account" : "Spent"}</span><span style="font-size:16px;font-weight:600">${inr(fromAccount)}</span></div>
+        ${onCC ? `<div><span class="muted" style="font-size:12px;display:block">On credit card</span><span style="font-size:16px;font-weight:600;color:#8FA3C7">${inr(onCC)}</span></div>` : ""}</div>
+      ${onCC ? `<span class="muted" style="font-size:12px;line-height:1.4">Credit card spends count in your budget, but aren't taken from income.</span>` : ""}
     </div>` : ""}
     <div class="card">
       <span class="muted" style="font-size:13px">${isNow ? "Spent so far" : "Spent"}</span>
@@ -277,7 +282,7 @@ function addView(a = state.add, editing = false) {
     <div class="chips">
       ${list.map((c) => `<button class="chip ${c.name === a.cat ? "on" : ""}" data-act="cat" data-name="${esc(c.name)}">${esc(c.name)}</button>`).join("")}
       <button class="chip new" data-act="newCat" aria-label="Add a new category">+ New</button></div>
-    ${inc ? "" : `<div class="modes">${["UPI", "Card", "Cash", "Auto-debit"].map((m) => `<button class="mode ${m === a.mode ? "on" : ""}" data-act="mode" data-mode="${m}">${m}</button>`).join("")}</div>`}
+    ${inc ? "" : `<div class="modes" style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px">${MODES.map((m) => `<button class="mode ${m === a.mode ? "on" : ""}" data-act="mode" data-mode="${m}">${m}</button>`).join("")}</div>`}
     ${a.adding ? `<div style="display:flex;flex-direction:column;gap:6px"><label for="aNew" style="font-size:12px;color:var(--muted)">New category name</label>
       <div style="display:flex;gap:8px"><input id="aNew" class="field" maxlength="40" placeholder="${inc ? "e.g. Bonus, Rent received" : "e.g. Kids, Pets, Gifts"}" value="${esc(a.draft)}" style="border-color:var(--accent)">
       <button class="ghost" data-act="cancelCat">Cancel</button><button class="ghost" data-act="saveCat" style="background:var(--accent);color:#111317;border:none;font-weight:600">Add</button></div></div>`
@@ -290,12 +295,13 @@ function addView(a = state.add, editing = false) {
 
 function summarySentences(all, prevAll) {
   const out = [], cur = spends(all), prev = spends(prevAll);
-  const income = sum(incomes(all)), spentAll = sum(cur);
+  const income = sum(incomes(all)), onCC = sum(all.filter(isCC)), spentAll = sum(cur) - onCC;
   if (income) {
     const kept = income - spentAll;
     out.push(kept >= 0 ? `You kept ${inr(kept)} of your ${inr(income)} income (${Math.round(kept / income * 100)}%).`
                        : `You spent ${inr(-kept)} more than you earned this month.`);
   }
+  if (onCC) out.push(`${inr(onCC)} went on your credit card — counted as spending, not yet taken from income.`);
   const tc = totals(cur), tp = totals(prev);
   const ranked = Object.entries(tc).sort((a, b) => b[1] - a[1]);
   if (!ranked.length) return out.length ? out : ["Nothing logged this month."];
@@ -455,7 +461,7 @@ async function onAction(btn) {
     const e = state.expenses.find((x) => x.id === btn.dataset.id);
     if (!e) return;
     const ds = dateStr(new Date(e.ts));
-    state.edit = { kind: e.kind || "expense", id: e.id, amt: String(e.amount), cat: e.category, mode: e.mode || "UPI", note: e.note || "", date: ds, origDate: ds, origTs: e.ts, adding: false, draft: "" };
+    state.edit = { kind: e.kind || "expense", id: e.id, amt: String(e.amount), cat: e.category, mode: e.mode === "Card" ? "Debit card" : e.mode || "UPI", note: e.note || "", date: ds, origDate: ds, origTs: e.ts, adding: false, draft: "" };
     window.scrollTo(0, 0); return render();
   }
   if (act === "cancelEdit") { state.edit = null; return render(); }
