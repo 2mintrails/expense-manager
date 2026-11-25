@@ -6,7 +6,7 @@ import { DurableObject } from "cloudflare:workers";
 const DEFAULT_CATEGORIES = ["Travel", "Rent", "Food", "Groceries", "Domestic Help", "Bills", "Shopping", "Health"];
 const DEFAULT_INCOME = ["Salary", "Freelance", "Interest", "Other"];
 const KINDS = ["expense", "income"];
-const MODES = ["UPI", "Card", "Cash"];
+const MODES = ["UPI", "Card", "Cash", "Auto-debit"];
 const MAX_FAILS = 8;               // wrong PINs allowed before a lockout
 const LOCK_MS = 15 * 60 * 1000;    // lockout length
 
