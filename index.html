@@ -88,7 +88,7 @@ const state = {
   view: startOfMonth(new Date()),            // month shown on Month / Summary
   expenses: [], prev: [],                    // this month, previous month
   add: { amt: "0", cat: null, mode: "UPI", note: "", date: "", adding: false, draft: "" },
-  openEntry: null,
+  edit: null,                               // the entry being edited, if any
 };
 
 // ---------------- small helpers ----------------
@@ -100,7 +100,9 @@ function addMonths(d, n) { return new Date(d.getFullYear(), d.getMonth() + n, 1)
 function monthName(d) { return d.toLocaleString("en-IN", { month: "long" }); }
 function monthKey(d) { return d.getFullYear() + "-" + (d.getMonth() + 1); }
 function sameMonth(a, b) { return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth(); }
-function todayStr() { const d = new Date(); return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"); }
+function dateStr(d) { return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"); }
+function todayStr() { return dateStr(new Date()); }
+const form = () => state.edit || state.add;
 function timeLabel(ts) {
   const d = new Date(ts), now = new Date();
   const t = d.toLocaleTimeString("en-IN", { hour: "numeric", minute: "2-digit" });
@@ -167,6 +169,7 @@ function render() {
   document.querySelectorAll("nav button").forEach((b) => b.classList.toggle("on", b.dataset.tab === state.tab));
   const app = $("#app");
   if (!cfg) { app.innerHTML = setupView(); return; }
+  if (state.edit) { app.innerHTML = addView(state.edit, true); return; }
   app.innerHTML = { month: monthView, add: addView, summary: summaryView, settings: settingsView }[state.tab]();
 }
 
@@ -226,18 +229,16 @@ function monthView() {
       ${state.expenses.length ? state.expenses.map((e) => `
         <button class="entry" data-act="openEntry" data-id="${esc(e.id)}">
           <span>${esc(e.note || e.category)}<small>${esc(e.category)} · ${esc(e.mode)} · ${esc(timeLabel(e.ts))}${queue.some((q) => q.id === e.id) ? " · waiting to sync" : ""}</small></span>
-          <span style="font-weight:600">${inr(e.amount)}</span></button>
-        ${state.openEntry === e.id ? `<div class="row" style="padding:8px 0"><span class="muted" style="font-size:13px">Delete this entry?</span><button class="del" data-act="delete" data-id="${esc(e.id)}">Delete</button></div>` : ""}`).join("")
+          <span style="font-weight:600">${inr(e.amount)}</span></button>`).join("")
       : `<p class="muted" style="font-size:14px">Nothing logged ${isNow ? "yet this month" : "this month"}.</p>`}
     </div></div>`;
 }
 
-function addView() {
-  const a = state.add;
+function addView(a = state.add, editing = false) {
   if (!a.cat || !cats.some((c) => c.name === a.cat)) a.cat = cats[0] ? cats[0].name : null;
   if (!a.date) a.date = todayStr();
   return `<div class="wrap">
-    <div class="row"><span class="eyebrow">Add expense</span>
+    <div class="row">${editing ? `<button class="ghost" data-act="cancelEdit" style="border:none;padding:0;color:var(--dim);font-size:15px">‹ Cancel</button><span class="eyebrow">Edit expense</span>` : `<span class="eyebrow">Add expense</span>`}
       <input id="aDate" type="date" value="${esc(a.date)}" max="${todayStr()}" aria-label="Date" style="background:none;border:none;color:var(--muted);font-size:13px;text-align:right"></div>
     <div style="display:flex;flex-direction:column;align-items:center;gap:4px;padding:2px 0">
       <span id="aAmt" class="big" style="font-size:48px">${inr(Number(a.amt))}</span>
@@ -252,7 +253,8 @@ function addView() {
     : `<label class="f">Note (optional)<input id="aNote" class="field" maxlength="120" placeholder="e.g. lunch with team" value="${esc(a.note)}"></label>`}
     <div class="keys">${["1","2","3","4","5","6","7","8","9","00","0","del"].map((k) =>
       `<button class="key" data-act="key" data-k="${k}" aria-label="${k === "del" ? "Delete digit" : k}">${k === "del" ? "⌫" : k}</button>`).join("")}</div>
-    <button class="primary" data-act="save">Save</button></div>`;
+    ${editing ? `<div style="display:flex;gap:10px"><button class="primary" data-act="delete" data-id="${esc(a.id)}" style="width:auto;padding:0 22px;background:transparent;border:1px solid var(--over);color:var(--over);font-size:16px">Delete</button>
+      <button class="primary" data-act="save" style="flex:1">Save changes</button></div>` : `<button class="primary" data-act="save">Save</button>`}</div>`;
 }
 
 function summarySentences(cur, prev) {
@@ -338,7 +340,7 @@ async function saveCatsList(list, msg) {
 }
 
 async function onAction(btn) {
-  const act = btn.dataset.act, a = state.add;
+  const act = btn.dataset.act, a = form();
   if (act === "connect") {
     const apiUrl = $("#sApi").value.trim().replace(/\/+$/, ""), pin = $("#sPin").value.trim();
     if (!/^https:\/\//.test(apiUrl) || !pin) { $("#sErr").textContent = "Enter the https:// address and your PIN."; return; }
@@ -371,9 +373,20 @@ async function onAction(btn) {
     if (!amount) return toast("Enter an amount");
     if (!a.cat) return toast("Pick a category");
     const now = new Date(), [y, m, d] = a.date.split("-").map(Number);
-    const when = a.date === todayStr() ? now : new Date(y, m - 1, d, 12, 0);
-    const e = { id: crypto.randomUUID(), ts: when.getTime(), amount, category: a.cat, mode: a.mode, note: a.note.trim() };
-    queue.push(e); LS.set("em.queue", queue);
+    let when;
+    if (state.edit) {
+      const o = new Date(a.origTs);   // keep the original time of day
+      when = a.date === a.origDate ? o : new Date(y, m - 1, d, o.getHours(), o.getMinutes());
+    } else when = a.date === todayStr() ? now : new Date(y, m - 1, d, 12, 0);
+    const e = { id: state.edit ? a.id : crypto.randomUUID(), ts: when.getTime(), amount, category: a.cat, mode: a.mode, note: a.note.trim() };
+    queue = queue.filter((q) => q.id !== e.id).concat([e]); LS.set("em.queue", queue);
+    if (state.edit) {
+      state.expenses = state.expenses.filter((x) => x.id !== e.id);
+      if (sameMonth(new Date(e.ts), state.view)) state.expenses = state.expenses.concat([e]).sort((p, q) => q.ts - p.ts);
+      state.edit = null; render(); toast("Updated " + inr(amount) + " · " + e.category);
+      try { await flushQueue(); } catch (err) {}
+      return render();
+    }
     if (sameMonth(new Date(e.ts), state.view)) state.expenses = [e].concat(state.expenses).sort((p, q) => q.ts - p.ts);
     state.add = { amt: "0", cat: a.cat, mode: a.mode, note: "", date: todayStr(), adding: false, draft: "" };
     render(); toast("Saved " + inr(amount) + " · " + e.category);
@@ -383,15 +396,22 @@ async function onAction(btn) {
   }
   if (act === "prevMonth" || act === "nextMonth") {
     state.view = addMonths(state.view, act === "prevMonth" ? -1 : 1);
-    state.expenses = []; state.prev = []; state.openEntry = null; render(); return refresh();
+    state.expenses = []; state.prev = []; render(); return refresh();
   }
-  if (act === "openEntry") { state.openEntry = state.openEntry === btn.dataset.id ? null : btn.dataset.id; return render(); }
+  if (act === "openEntry") {
+    const e = state.expenses.find((x) => x.id === btn.dataset.id);
+    if (!e) return;
+    const ds = dateStr(new Date(e.ts));
+    state.edit = { id: e.id, amt: String(e.amount), cat: e.category, mode: e.mode, note: e.note || "", date: ds, origDate: ds, origTs: e.ts, adding: false, draft: "" };
+    window.scrollTo(0, 0); return render();
+  }
+  if (act === "cancelEdit") { state.edit = null; return render(); }
   if (act === "delete") {
     const id = btn.dataset.id;
     if (queue.some((q) => q.id === id)) { queue = queue.filter((q) => q.id !== id); LS.set("em.queue", queue); }
     try { await api("/api/expenses/" + encodeURIComponent(id), { method: "DELETE" }); }
     catch (e) { return toast(e.code ? e.message : "You're offline — delete when connected"); }
-    state.expenses = state.expenses.filter((x) => x.id !== id); state.openEntry = null; render(); toast("Deleted"); return;
+    state.expenses = state.expenses.filter((x) => x.id !== id); state.edit = null; render(); toast("Deleted"); return;
   }
   if (act === "addCatRow") { cats = readCatRows().concat([{ name: "", budget: 0 }]); render(); const last = document.querySelectorAll('#catList [data-k="name"]'); last[last.length - 1].focus(); return; }
   if (act === "rmCat") { const rows = readCatRows(); rows.splice(Number(btn.dataset.i), 1); cats = rows; return render(); }
@@ -411,16 +431,17 @@ async function onAction(btn) {
 }
 function keepAddInputs() {
   const n = $("#aNote"), d = $("#aDate"), c = $("#aNew");
-  if (n) state.add.note = n.value; if (d && d.value) state.add.date = d.value; if (c) state.add.draft = c.value;
+  const f = form();
+  if (n) f.note = n.value; if (d && d.value) f.date = d.value; if (c) f.draft = c.value;
 }
 
 document.addEventListener("click", (ev) => {
   const tab = ev.target.closest("nav button");
-  if (tab) { keepAddInputs(); state.tab = tab.dataset.tab; state.openEntry = null; render(); if (tab.dataset.tab !== "add") refresh(true); return; }
+  if (tab) { keepAddInputs(); state.tab = tab.dataset.tab; state.edit = null; render(); if (tab.dataset.tab !== "add") refresh(true); return; }
   const btn = ev.target.closest("[data-act]");
   if (btn) onAction(btn);
 });
-document.addEventListener("change", (ev) => { if (ev.target.id === "aDate" && ev.target.value) state.add.date = ev.target.value; });
+document.addEventListener("change", (ev) => { if (ev.target.id === "aDate" && ev.target.value) form().date = ev.target.value; });
 window.addEventListener("online", () => refresh(true));
 document.addEventListener("visibilitychange", () => { if (!document.hidden && cfg) refresh(true); });
 

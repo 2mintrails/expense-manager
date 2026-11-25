@@ -26,7 +26,7 @@ It shows this month against your budgets, a month-end summary in plain words, an
 ## Everyday use
 
 - **Add** — type the amount, tap a category and payment mode, Save. Change the date at the top to log something from an earlier day. **+ New** adds a category on the spot.
-- **Month** — spent vs budget, safe-to-spend per day, each category's bar (orange = over budget), all entries. Tap an entry to delete it.
+- **Month** — spent vs budget, safe-to-spend per day, each category's bar (orange = over budget), all entries. Tap an entry to edit or delete it.
 - **Summary** — the month in plain words, compared with the month before. Use ‹ › to see past months.
 - **Settings** — rename categories, set monthly budgets (0 = no limit), download a CSV backup, or lock the device.
 - **No signal?** Saves are kept on the phone and sent automatically once you're back online ("waiting to sync").
