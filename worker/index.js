@@ -4,6 +4,8 @@
 import { DurableObject } from "cloudflare:workers";
 
 const DEFAULT_CATEGORIES = ["Travel", "Rent", "Food", "Groceries", "Domestic Help", "Bills", "Shopping", "Health"];
+const DEFAULT_INCOME = ["Salary", "Freelance", "Interest", "Other"];
+const KINDS = ["expense", "income"];
 const MODES = ["UPI", "Card", "Cash"];
 const MAX_FAILS = 8;               // wrong PINs allowed before a lockout
 const LOCK_MS = 15 * 60 * 1000;    // lockout length
@@ -17,13 +19,27 @@ export class Store extends DurableObject {
       category TEXT NOT NULL, mode TEXT NOT NULL, note TEXT NOT NULL DEFAULT '')`);
     this.sql.exec(`CREATE INDEX IF NOT EXISTS expenses_ts ON expenses (ts)`);
     this.sql.exec(`CREATE TABLE IF NOT EXISTS categories (
-      name TEXT PRIMARY KEY, budget INTEGER NOT NULL DEFAULT 0, pos INTEGER NOT NULL)`);
+      name TEXT NOT NULL, kind TEXT NOT NULL DEFAULT 'expense', budget INTEGER NOT NULL DEFAULT 0,
+      pos INTEGER NOT NULL, PRIMARY KEY (kind, name))`);
     this.sql.exec(`CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT NOT NULL)`);
-    const n = this.sql.exec(`SELECT COUNT(*) AS n FROM categories`).one().n;
-    if (n === 0) {
-      DEFAULT_CATEGORIES.forEach((name, i) =>
-        this.sql.exec(`INSERT INTO categories (name, budget, pos) VALUES (?, 0, ?)`, name, i));
+    // v2: income. Each entry and category gets a kind ("expense" or "income").
+    const hasKind = (t) => this.sql.exec(`PRAGMA table_info(${t})`).toArray().some((c) => c.name === "kind");
+    if (!hasKind("expenses")) this.sql.exec(`ALTER TABLE expenses ADD COLUMN kind TEXT NOT NULL DEFAULT 'expense'`);
+    if (!hasKind("categories")) {
+      // a category name may now exist once per kind
+      this.sql.exec(`CREATE TABLE categories2 (name TEXT NOT NULL, kind TEXT NOT NULL DEFAULT 'expense',
+        budget INTEGER NOT NULL DEFAULT 0, pos INTEGER NOT NULL, PRIMARY KEY (kind, name))`);
+      this.sql.exec(`INSERT INTO categories2 (name, kind, budget, pos) SELECT name, 'expense', budget, pos FROM categories`);
+      this.sql.exec(`DROP TABLE categories`);
+      this.sql.exec(`ALTER TABLE categories2 RENAME TO categories`);
     }
+    const seed = (kind, names) => {
+      const n = this.sql.exec(`SELECT COUNT(*) AS n FROM categories WHERE kind = ?`, kind).one().n;
+      if (n === 0) names.forEach((name, i) =>
+        this.sql.exec(`INSERT INTO categories (name, kind, budget, pos) VALUES (?, ?, 0, ?)`, name, kind, i));
+    };
+    seed("expense", DEFAULT_CATEGORIES);
+    seed("income", DEFAULT_INCOME);
   }
 
   meta(k, fallback) {
@@ -45,26 +61,26 @@ export class Store extends DurableObject {
     return "wrong";
   }
 
-  listCategories() {
-    return this.sql.exec(`SELECT name, budget FROM categories ORDER BY pos`).toArray();
+  listCategories(kind) {
+    return this.sql.exec(`SELECT name, budget FROM categories WHERE kind = ? ORDER BY pos`, kind).toArray();
   }
-  saveCategories(list) {
+  saveCategories(kind, list) {
     this.ctx.storage.transactionSync(() => {
-      this.sql.exec(`DELETE FROM categories`);
-      list.forEach((c, i) => this.sql.exec(`INSERT INTO categories (name, budget, pos) VALUES (?, ?, ?)`, c.name, c.budget, i));
+      this.sql.exec(`DELETE FROM categories WHERE kind = ?`, kind);
+      list.forEach((c, i) => this.sql.exec(`INSERT INTO categories (name, kind, budget, pos) VALUES (?, ?, ?, ?)`, c.name, kind, c.budget, i));
     });
-    return this.listCategories();
+    return this.listCategories(kind);
   }
 
   listExpenses(from, to) {
-    return this.sql.exec(`SELECT id, ts, amount, category, mode, note FROM expenses
+    return this.sql.exec(`SELECT id, ts, amount, category, mode, note, kind FROM expenses
       WHERE ts >= ? AND ts < ? ORDER BY ts DESC`, from, to).toArray();
   }
   addExpense(e) {
     // Same id twice (an offline retry) just overwrites, so nothing is doubled.
-    this.sql.exec(`INSERT INTO expenses (id, ts, amount, category, mode, note) VALUES (?, ?, ?, ?, ?, ?)
+    this.sql.exec(`INSERT INTO expenses (id, ts, amount, category, mode, note, kind) VALUES (?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET ts = excluded.ts, amount = excluded.amount, category = excluded.category,
-      mode = excluded.mode, note = excluded.note`, e.id, e.ts, e.amount, e.category, e.mode, e.note);
+      mode = excluded.mode, note = excluded.note, kind = excluded.kind`, e.id, e.ts, e.amount, e.category, e.mode, e.note, e.kind);
     return e;
   }
   deleteExpense(id) {
@@ -72,7 +88,7 @@ export class Store extends DurableObject {
     return true;
   }
   allExpenses() {
-    return this.sql.exec(`SELECT id, ts, amount, category, mode, note FROM expenses ORDER BY ts`).toArray();
+    return this.sql.exec(`SELECT id, ts, amount, category, mode, note, kind FROM expenses ORDER BY ts`).toArray();
   }
 }
 
@@ -107,11 +123,12 @@ function validExpense(body) {
   const ts = Math.round(Number(body.ts));
   const id = cleanText(body.id, 64);
   const category = cleanText(body.category, 40);
-  const mode = MODES.includes(body.mode) ? body.mode : null;
-  if (!id || !category || !mode) return null;
+  const kind = KINDS.includes(body.kind) ? body.kind : "expense";
+  const mode = kind === "income" ? "" : MODES.includes(body.mode) ? body.mode : null;
+  if (!id || !category || mode === null) return null;
   if (!Number.isFinite(amount) || amount <= 0 || amount > 100000000) return null;
   if (!Number.isFinite(ts) || ts < 946684800000 || ts > Date.now() + 366 * 864e5) return null;
-  return { id, ts, amount, category, mode, note: cleanText(body.note, 120) };
+  return { id, ts, amount, category, mode, note: cleanText(body.note, 120), kind };
 }
 function validCategories(list) {
   if (!Array.isArray(list) || list.length === 0 || list.length > 50) return null;
@@ -150,12 +167,13 @@ export default {
     try {
       if (path === "/api/ping" && request.method === "GET") return json({ ok: true }, 200, headers);
 
+      const kind = KINDS.includes(url.searchParams.get("kind")) ? url.searchParams.get("kind") : "expense";
       if (path === "/api/categories" && request.method === "GET")
-        return json(await store.listCategories(), 200, headers);
+        return json(await store.listCategories(kind), 200, headers);
       if (path === "/api/categories" && request.method === "PUT") {
         const list = validCategories(await request.json());
         if (!list) return json({ error: "bad categories" }, 400, headers);
-        return json(await store.saveCategories(list), 200, headers);
+        return json(await store.saveCategories(kind, list), 200, headers);
       }
 
       if (path === "/api/expenses" && request.method === "GET") {
@@ -177,11 +195,11 @@ export default {
 
       if (path === "/api/export" && request.method === "GET") {
         const rows = await store.allExpenses();
-        const lines = ["date,time,amount,category,mode,note"];
+        const lines = ["date,time,type,amount,category,mode,note"];
         for (const r of rows) {
           const d = new Date(r.ts + 5.5 * 3600 * 1000); // shown in India time
           const iso = d.toISOString();
-          lines.push([iso.slice(0, 10), iso.slice(11, 16), r.amount, r.category, r.mode, r.note].map(csvCell).join(","));
+          lines.push([iso.slice(0, 10), iso.slice(11, 16), r.kind, r.amount, r.category, r.mode, r.note].map(csvCell).join(","));
         }
         return new Response(lines.join("\n") + "\n", {
           status: 200,

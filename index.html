@@ -35,6 +35,10 @@
   .chips { display:grid; grid-template-columns:repeat(4, minmax(0,1fr)); gap:8px; }
   .chip { min-height:48px; border-radius:14px; border:1px solid var(--line); background:var(--card); font-size:13px; font-weight:500; line-height:1.15; padding:4px; }
   .chip.on { border-color:var(--accent); background:#2A2418; }
+  .inc { --accent:#5EC4B6; } .inc .chip.on { background:#16302C; }
+  .seg { display:flex; background:var(--card); border-radius:22px; padding:4px; gap:4px; }
+  .seg button { height:36px; padding:0 16px; border-radius:18px; border:none; background:transparent; color:var(--dim); font-size:14px; font-weight:600; }
+  .seg button.on { background:var(--accent); color:#111317; }
   .chip.new { border-style:dashed; background:transparent; color:var(--dim); }
   .modes { display:flex; gap:8px; }
   .mode { flex:1; height:40px; border-radius:20px; border:1px solid var(--line); background:transparent; font-size:13px; font-weight:500; }
@@ -80,14 +84,20 @@ const LS = {
 };
 let cfg = LS.get("em.cfg", null);           // { api, pin }
 let queue = LS.get("em.queue", []);          // expenses saved while offline
-let cats = LS.get("em.cats", []);            // [{name, budget}]
+let cats = LS.get("em.cats", []);            // expense categories [{name, budget}]
+let incCats = LS.get("em.incCats", []);      // income categories [{name}]
+const APP_VERSION = "1.2";
+const isInc = (e) => e.kind === "income";
+const spends = (l) => l.filter((e) => !isInc(e));
+const incomes = (l) => l.filter(isInc);
+const catsFor = (k) => (k === "income" ? incCats : cats);
 let monthCache = LS.get("em.month", {});     // last loaded month, for instant start
 
 const state = {
   tab: "month",
   view: startOfMonth(new Date()),            // month shown on Month / Summary
   expenses: [], prev: [],                    // this month, previous month
-  add: { amt: "0", cat: null, mode: "UPI", note: "", date: "", adding: false, draft: "" },
+  add: { kind: "expense", amt: "0", cat: null, mode: "UPI", note: "", date: "", adding: false, draft: "" },
   edit: null,                               // the entry being edited, if any
 };
 
@@ -140,7 +150,10 @@ async function loadMonth() {
   state.prev = prev;
   if (sameMonth(state.view, new Date())) { monthCache = { key: monthKey(state.view), cur: state.expenses, prev }; LS.set("em.month", monthCache); }
 }
-async function loadCats() { cats = await api("/api/categories"); LS.set("em.cats", cats); }
+async function loadCats() {
+  [cats, incCats] = await Promise.all([api("/api/categories?kind=expense"), api("/api/categories?kind=income")]);
+  LS.set("em.cats", cats); LS.set("em.incCats", incCats);
+}
 
 async function flushQueue() {
   if (!cfg || !queue.length) return;
@@ -187,14 +200,14 @@ function totals(list) { const t = {}; list.forEach((e) => { t[e.category] = (t[e
 function sum(list) { return list.reduce((s, e) => s + e.amount, 0); }
 
 function monthView() {
-  const spent = sum(state.expenses);
+  const spent = sum(spends(state.expenses)), income = sum(incomes(state.expenses));
   const budget = cats.reduce((s, c) => s + (c.budget || 0), 0);
   const isNow = sameMonth(state.view, new Date());
   const now = new Date();
   const daysInMonth = new Date(state.view.getFullYear(), state.view.getMonth() + 1, 0).getDate();
   const daysLeft = isNow ? daysInMonth - now.getDate() + 1 : 0;
   const left = budget - spent;
-  const t = totals(state.expenses);
+  const t = totals(spends(state.expenses));
   const names = cats.map((c) => c.name);
   Object.keys(t).forEach((n) => { if (!names.includes(n)) names.push(n); });
   const rows = names.map((n) => {
@@ -206,6 +219,13 @@ function monthView() {
     <div class="row"><button class="ghost" data-act="prevMonth" aria-label="Previous month">‹</button>
       <span class="eyebrow">${esc(monthName(state.view))} ${state.view.getFullYear()}</span>
       <button class="ghost" data-act="nextMonth" aria-label="Next month" ${isNow ? "disabled style='opacity:.3'" : ""}>›</button></div>
+    ${income ? `<div class="card">
+      <span class="muted" style="font-size:13px">Left this month</span>
+      <span class="big" style="font-size:40px;color:${income - spent < 0 ? "var(--over)" : "var(--ok)"}">${income - spent < 0 ? "−" : ""}${inr(Math.abs(income - spent))}</span>
+      <div style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px">
+        <div><span class="muted" style="font-size:12px;display:block">Income</span><span style="font-size:17px;font-weight:600">${inr(income)}</span></div>
+        <div><span class="muted" style="font-size:12px;display:block">Spent</span><span style="font-size:17px;font-weight:600">${inr(spent)}</span></div></div>
+    </div>` : ""}
     <div class="card">
       <span class="muted" style="font-size:13px">${isNow ? "Spent so far" : "Spent"}</span>
       <div style="display:flex;align-items:baseline;gap:8px;flex-wrap:wrap"><span class="big" style="font-size:40px">${inr(spent)}</span>
@@ -228,40 +248,48 @@ function monthView() {
     <div><span class="eyebrow">Entries</span>
       ${state.expenses.length ? state.expenses.map((e) => `
         <button class="entry" data-act="openEntry" data-id="${esc(e.id)}">
-          <span>${esc(e.note || e.category)}<small>${esc(e.category)} · ${esc(e.mode)} · ${esc(timeLabel(e.ts))}${queue.some((q) => q.id === e.id) ? " · waiting to sync" : ""}</small></span>
-          <span style="font-weight:600">${inr(e.amount)}</span></button>`).join("")
+          <span>${esc(e.note || e.category)}<small>${isInc(e) ? "Income · " + esc(e.category) : esc(e.category) + " · " + esc(e.mode)} · ${esc(timeLabel(e.ts))}${queue.some((q) => q.id === e.id) ? " · waiting to sync" : ""}</small></span>
+          <span style="font-weight:600${isInc(e) ? ";color:var(--ok)" : ""}">${isInc(e) ? "+" : ""}${inr(e.amount)}</span></button>`).join("")
       : `<p class="muted" style="font-size:14px">Nothing logged ${isNow ? "yet this month" : "this month"}.</p>`}
     </div></div>`;
 }
 
 function addView(a = state.add, editing = false) {
-  if (!a.cat || !cats.some((c) => c.name === a.cat)) a.cat = cats[0] ? cats[0].name : null;
+  const inc = a.kind === "income", list = catsFor(a.kind);
+  if (!a.cat || (!list.some((c) => c.name === a.cat) && !editing)) a.cat = list[0] ? list[0].name : null;
   if (!a.date) a.date = todayStr();
-  return `<div class="wrap">
-    <div class="row">${editing ? `<button class="ghost" data-act="cancelEdit" style="border:none;padding:0;color:var(--dim);font-size:15px">‹ Cancel</button><span class="eyebrow">Edit expense</span>` : `<span class="eyebrow">Add expense</span>`}
+  const seg = `<div class="seg"><button data-act="kind" data-kind="expense" class="${inc ? "" : "on"}">Expense</button><button data-act="kind" data-kind="income" class="${inc ? "on" : ""}">Income</button></div>`;
+  return `<div class="wrap ${inc ? "inc" : ""}">
+    <div class="row">${editing ? `<button class="ghost" data-act="cancelEdit" aria-label="Cancel editing" style="border:none;padding:0 6px 0 0;color:var(--dim);font-size:26px">‹</button>` : ""}${seg}
       <input id="aDate" type="date" value="${esc(a.date)}" max="${todayStr()}" aria-label="Date" style="background:none;border:none;color:var(--muted);font-size:13px;text-align:right"></div>
     <div style="display:flex;flex-direction:column;align-items:center;gap:4px;padding:2px 0">
       <span id="aAmt" class="big" style="font-size:48px">${inr(Number(a.amt))}</span>
-      <span style="font-size:14px;color:var(--accent);font-weight:500">${esc(a.cat || "Pick a category")} · ${esc(a.mode)}</span></div>
+      <span style="font-size:14px;color:var(--accent);font-weight:500">${esc(a.cat || "Pick a category")} · ${inc ? "income" : esc(a.mode)}</span></div>
     <div class="chips">
-      ${cats.map((c) => `<button class="chip ${c.name === a.cat ? "on" : ""}" data-act="cat" data-name="${esc(c.name)}">${esc(c.name)}</button>`).join("")}
+      ${list.map((c) => `<button class="chip ${c.name === a.cat ? "on" : ""}" data-act="cat" data-name="${esc(c.name)}">${esc(c.name)}</button>`).join("")}
       <button class="chip new" data-act="newCat" aria-label="Add a new category">+ New</button></div>
-    <div class="modes">${["UPI", "Card", "Cash"].map((m) => `<button class="mode ${m === a.mode ? "on" : ""}" data-act="mode" data-mode="${m}">${m}</button>`).join("")}</div>
+    ${inc ? "" : `<div class="modes">${["UPI", "Card", "Cash"].map((m) => `<button class="mode ${m === a.mode ? "on" : ""}" data-act="mode" data-mode="${m}">${m}</button>`).join("")}</div>`}
     ${a.adding ? `<div style="display:flex;flex-direction:column;gap:6px"><label for="aNew" style="font-size:12px;color:var(--muted)">New category name</label>
-      <div style="display:flex;gap:8px"><input id="aNew" class="field" maxlength="40" placeholder="e.g. Kids, Pets, Gifts" value="${esc(a.draft)}" style="border-color:var(--accent)">
+      <div style="display:flex;gap:8px"><input id="aNew" class="field" maxlength="40" placeholder="${inc ? "e.g. Bonus, Rent received" : "e.g. Kids, Pets, Gifts"}" value="${esc(a.draft)}" style="border-color:var(--accent)">
       <button class="ghost" data-act="cancelCat">Cancel</button><button class="ghost" data-act="saveCat" style="background:var(--accent);color:#111317;border:none;font-weight:600">Add</button></div></div>`
-    : `<label class="f">Note (optional)<input id="aNote" class="field" maxlength="120" placeholder="e.g. lunch with team" value="${esc(a.note)}"></label>`}
+    : `<label class="f">Note (optional)<input id="aNote" class="field" maxlength="120" placeholder="${inc ? "e.g. November salary" : "e.g. lunch with team"}" value="${esc(a.note)}"></label>`}
     <div class="keys">${["1","2","3","4","5","6","7","8","9","00","0","del"].map((k) =>
       `<button class="key" data-act="key" data-k="${k}" aria-label="${k === "del" ? "Delete digit" : k}">${k === "del" ? "⌫" : k}</button>`).join("")}</div>
     ${editing ? `<div style="display:flex;gap:10px"><button class="primary" data-act="delete" data-id="${esc(a.id)}" style="width:auto;padding:0 22px;background:transparent;border:1px solid var(--over);color:var(--over);font-size:16px">Delete</button>
-      <button class="primary" data-act="save" style="flex:1">Save changes</button></div>` : `<button class="primary" data-act="save">Save</button>`}</div>`;
+      <button class="primary" data-act="save" style="flex:1">Save changes</button></div>` : `<button class="primary" data-act="save">${inc ? "Save income" : "Save"}</button>`}</div>`;
 }
 
-function summarySentences(cur, prev) {
-  const out = [];
+function summarySentences(all, prevAll) {
+  const out = [], cur = spends(all), prev = spends(prevAll);
+  const income = sum(incomes(all)), spentAll = sum(cur);
+  if (income) {
+    const kept = income - spentAll;
+    out.push(kept >= 0 ? `You kept ${inr(kept)} of your ${inr(income)} income (${Math.round(kept / income * 100)}%).`
+                       : `You spent ${inr(-kept)} more than you earned this month.`);
+  }
   const tc = totals(cur), tp = totals(prev);
   const ranked = Object.entries(tc).sort((a, b) => b[1] - a[1]);
-  if (!ranked.length) return ["Nothing logged this month."];
+  if (!ranked.length) return out.length ? out : ["Nothing logged this month."];
   const [topName, topAmt] = ranked[0];
   const topDiff = topAmt - (tp[topName] || 0);
   out.push(`${topName} was your biggest spend at ${inr(topAmt)}` + (prev.length && topDiff !== 0 ? `, ${topDiff > 0 ? "up" : "down"} ${inr(Math.abs(topDiff))} from last month.` : "."));
@@ -280,7 +308,7 @@ function summarySentences(cur, prev) {
 }
 
 function summaryView() {
-  const cur = state.expenses, prev = state.prev;
+  const all = state.expenses, cur = spends(all);
   const spent = sum(cur), budget = cats.reduce((s, c) => s + (c.budget || 0), 0);
   const isNow = sameMonth(state.view, new Date());
   const ranked = Object.entries(totals(cur)).sort((a, b) => b[1] - a[1]);
@@ -293,7 +321,7 @@ function summaryView() {
     <div style="display:flex;flex-direction:column;gap:6px"><span class="big" style="font-size:40px">${inr(spent)}</span>
       ${budget ? `<span style="font-size:15px;font-weight:500;color:${spent > budget ? "var(--over)" : "var(--ok)"}">${inr(Math.abs(budget - spent))} ${spent > budget ? "over" : "under"} your ${inr(budget)} budget</span>` : ""}</div>
     <div class="card"><span class="eyebrow">In plain words</span>
-      ${summarySentences(cur, prev).map((s) => `<p style="margin:0;font-size:15px;line-height:1.5">${esc(s)}</p>`).join("")}</div>
+      ${summarySentences(all, state.prev).map((s) => `<p style="margin:0;font-size:15px;line-height:1.5">${esc(s)}</p>`).join("")}</div>
     ${ranked.length ? `<div style="display:flex;flex-direction:column;gap:12px"><span class="eyebrow">Where it went</span><div class="hbars">
       ${ranked.map(([n, a]) => `<div class="hbar"><span>${esc(n)}</span><div class="bar" style="height:10px;background:var(--soft)" aria-hidden="true"><div style="width:${Math.round(a / max * 100)}%;background:var(--accent)"></div></div><span class="dim" style="text-align:right">${inr(a)}</span></div>`).join("")}
       </div></div>` : ""}
@@ -315,26 +343,39 @@ function settingsView() {
     </div>
     <div style="display:flex;gap:8px"><button class="ghost" data-act="addCatRow" style="flex:1">+ Add category</button>
       <button class="ghost" data-act="saveCats" style="flex:1;background:var(--accent);color:#111317;border:none;font-weight:600">Save changes</button></div>
+    <span class="eyebrow" style="margin-top:12px">Income categories</span>
+    <div id="incList" style="display:flex;flex-direction:column;gap:8px">
+      ${incCats.map((c, i) => `<div class="catrow" style="grid-template-columns:1fr 44px">
+        <input class="field" data-k="name" value="${esc(c.name)}" maxlength="40" aria-label="Income category name">
+        <button class="iconbtn" data-act="rmCat" data-list="incList" data-i="${i}" aria-label="Remove ${esc(c.name)}"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg></button></div>`).join("")}
+    </div>
+    <div style="display:flex;gap:8px"><button class="ghost" data-act="addCatRow" data-list="incList" style="flex:1">+ Add category</button>
+      <button class="ghost" data-act="saveCats" data-list="incList" style="flex:1;background:var(--ok);color:#111317;border:none;font-weight:600">Save changes</button></div>
     <span class="eyebrow" style="margin-top:12px">Backup</span>
-    <button class="ghost" data-act="export">Download all expenses (CSV)</button>
+    <button class="ghost" data-act="export">Download all entries (CSV)</button>
     <span class="eyebrow" style="margin-top:12px">This device</span>
     <p class="muted" style="margin:0;font-size:13px;word-break:break-all">Connected to ${esc(cfg.api)}</p>
     <button class="ghost" data-act="logout">Lock this device (forget PIN)</button></div>`;
 }
 
 // ---------------- actions ----------------
-function readCatRows() {
-  return Array.from(document.querySelectorAll("#catList .catrow")).map((row) => ({
-    name: row.querySelector('[data-k="name"]').value.trim(),
-    budget: Math.max(0, Math.round(Number(row.querySelector('[data-k="budget"]').value.replace(/[^0-9]/g, "")) || 0)),
-  }));
+function readCatRows(listId = "catList") {
+  return Array.from(document.querySelectorAll("#" + listId + " .catrow")).map((row) => {
+    const b = row.querySelector('[data-k="budget"]');
+    return { name: row.querySelector('[data-k="name"]').value.trim(),
+             budget: b ? Math.max(0, Math.round(Number(b.value.replace(/[^0-9]/g, "")) || 0)) : 0 };
+  });
 }
-async function saveCatsList(list, msg) {
+async function saveCatsList(list, msg, kind = "expense") {
   const clean = list.filter((c) => c.name);
   const names = clean.map((c) => c.name.toLowerCase());
   if (!clean.length) return toast("Keep at least one category");
   if (new Set(names).size !== names.length) return toast("Two categories have the same name");
-  try { cats = await api("/api/categories", { method: "PUT", body: JSON.stringify(clean) }); LS.set("em.cats", cats); toast(msg || "Saved"); }
+  try {
+    const saved = await api("/api/categories?kind=" + kind, { method: "PUT", body: JSON.stringify(clean) });
+    if (kind === "income") { incCats = saved; LS.set("em.incCats", incCats); } else { cats = saved; LS.set("em.cats", cats); }
+    toast(msg || "Saved");
+  }
   catch (e) { toast(e.code ? e.message : "You're offline — try again when connected"); }
   render();
 }
@@ -357,15 +398,17 @@ async function onAction(btn) {
   }
   if (act === "cat") { keepAddInputs(); a.cat = btn.dataset.name; return render(); }
   if (act === "mode") { keepAddInputs(); a.mode = btn.dataset.mode; return render(); }
+  if (act === "kind") { keepAddInputs(); if (a.kind !== btn.dataset.kind) { a.kind = btn.dataset.kind; a.cat = null; a.adding = false; } return render(); }
   if (act === "newCat") { keepAddInputs(); a.adding = true; a.draft = ""; render(); const i = $("#aNew"); if (i) i.focus(); return; }
   if (act === "cancelCat") { a.adding = false; return render(); }
   if (act === "saveCat") {
     const n = ($("#aNew").value || "").trim().slice(0, 40);
     a.adding = false;
     if (!n) return render();
-    if (cats.some((c) => c.name.toLowerCase() === n.toLowerCase())) { a.cat = cats.find((c) => c.name.toLowerCase() === n.toLowerCase()).name; return render(); }
+    const list = catsFor(a.kind);
+    if (list.some((c) => c.name.toLowerCase() === n.toLowerCase())) { a.cat = list.find((c) => c.name.toLowerCase() === n.toLowerCase()).name; return render(); }
     a.cat = n;
-    return saveCatsList(cats.concat([{ name: n, budget: 0 }]), "Added " + n);
+    return saveCatsList(list.concat([{ name: n, budget: 0 }]), "Added " + n, a.kind);
   }
   if (act === "save") {
     keepAddInputs();
@@ -378,18 +421,19 @@ async function onAction(btn) {
       const o = new Date(a.origTs);   // keep the original time of day
       when = a.date === a.origDate ? o : new Date(y, m - 1, d, o.getHours(), o.getMinutes());
     } else when = a.date === todayStr() ? now : new Date(y, m - 1, d, 12, 0);
-    const e = { id: state.edit ? a.id : crypto.randomUUID(), ts: when.getTime(), amount, category: a.cat, mode: a.mode, note: a.note.trim() };
+    const inc = a.kind === "income";
+    const e = { id: state.edit ? a.id : crypto.randomUUID(), ts: when.getTime(), amount, category: a.cat, mode: inc ? "" : a.mode, note: a.note.trim(), kind: a.kind };
     queue = queue.filter((q) => q.id !== e.id).concat([e]); LS.set("em.queue", queue);
     if (state.edit) {
       state.expenses = state.expenses.filter((x) => x.id !== e.id);
       if (sameMonth(new Date(e.ts), state.view)) state.expenses = state.expenses.concat([e]).sort((p, q) => q.ts - p.ts);
-      state.edit = null; render(); toast("Updated " + inr(amount) + " · " + e.category);
+      state.edit = null; render(); toast("Updated " + (inc ? "+" : "") + inr(amount) + " · " + e.category);
       try { await flushQueue(); } catch (err) {}
       return render();
     }
     if (sameMonth(new Date(e.ts), state.view)) state.expenses = [e].concat(state.expenses).sort((p, q) => q.ts - p.ts);
-    state.add = { amt: "0", cat: a.cat, mode: a.mode, note: "", date: todayStr(), adding: false, draft: "" };
-    render(); toast("Saved " + inr(amount) + " · " + e.category);
+    state.add = { kind: a.kind, amt: "0", cat: a.cat, mode: a.mode, note: "", date: todayStr(), adding: false, draft: "" };
+    render(); toast("Saved " + (inc ? "+" : "") + inr(amount) + " · " + e.category);
     try { await flushQueue(); } catch (err) {}
     if (state.tab === "month") render();
     return;
@@ -402,7 +446,7 @@ async function onAction(btn) {
     const e = state.expenses.find((x) => x.id === btn.dataset.id);
     if (!e) return;
     const ds = dateStr(new Date(e.ts));
-    state.edit = { id: e.id, amt: String(e.amount), cat: e.category, mode: e.mode, note: e.note || "", date: ds, origDate: ds, origTs: e.ts, adding: false, draft: "" };
+    state.edit = { kind: e.kind || "expense", id: e.id, amt: String(e.amount), cat: e.category, mode: e.mode || "UPI", note: e.note || "", date: ds, origDate: ds, origTs: e.ts, adding: false, draft: "" };
     window.scrollTo(0, 0); return render();
   }
   if (act === "cancelEdit") { state.edit = null; return render(); }
@@ -413,9 +457,12 @@ async function onAction(btn) {
     catch (e) { return toast(e.code ? e.message : "You're offline — delete when connected"); }
     state.expenses = state.expenses.filter((x) => x.id !== id); state.edit = null; render(); toast("Deleted"); return;
   }
-  if (act === "addCatRow") { cats = readCatRows().concat([{ name: "", budget: 0 }]); render(); const last = document.querySelectorAll('#catList [data-k="name"]'); last[last.length - 1].focus(); return; }
-  if (act === "rmCat") { const rows = readCatRows(); rows.splice(Number(btn.dataset.i), 1); cats = rows; return render(); }
-  if (act === "saveCats") return saveCatsList(readCatRows());
+  const listId = btn.dataset.list || "catList", listKind = listId === "incList" ? "income" : "expense";
+  const setList = (rows) => { const other = listKind === "income" ? "catList" : "incList", otherRows = readCatRows(other);
+    if (listKind === "income") { incCats = rows; cats = otherRows; } else { cats = rows; incCats = otherRows; } };
+  if (act === "addCatRow") { setList(readCatRows(listId).concat([{ name: "", budget: 0 }])); render(); const last = document.querySelectorAll("#" + listId + ' [data-k="name"]'); last[last.length - 1].focus(); return; }
+  if (act === "rmCat") { const rows = readCatRows(listId); rows.splice(Number(btn.dataset.i), 1); setList(rows); return render(); }
+  if (act === "saveCats") return saveCatsList(readCatRows(listId), "Saved", listKind);
   if (act === "export") {
     try {
       const csv = await api("/api/export");
@@ -445,10 +492,23 @@ document.addEventListener("change", (ev) => { if (ev.target.id === "aDate" && ev
 window.addEventListener("online", () => refresh(true));
 document.addEventListener("visibilitychange", () => { if (!document.hidden && cfg) refresh(true); });
 
+// ---------------- updates ----------------
+// Phones keep a saved copy of the app for a while. This asks GitHub for the
+// newest copy and, if its version is different, reloads into it.
+async function checkForUpdate() {
+  try {
+    const res = await fetch("./index.html?check=" + Date.now(), { cache: "no-store" });
+    const m = (await res.text()).match(/const APP_VERSION = "([^"]+)"/);
+    if (m && m[1] !== APP_VERSION) location.replace("./?v=" + encodeURIComponent(m[1]));
+  } catch (e) {}
+}
+document.addEventListener("visibilitychange", () => { if (!document.hidden) checkForUpdate(); });
+
 // ---------------- start ----------------
 if (cfg && monthCache.key === monthKey(state.view)) { state.expenses = monthCache.cur || []; state.prev = monthCache.prev || []; }
 render();
 if (cfg) refresh(true);
+checkForUpdate();
 </script>
 </body>
 </html>
