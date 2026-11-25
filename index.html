@@ -173,8 +173,8 @@ function render() {
 function setupView() {
   return `<div class="wrap" style="padding-top:48px">
     <div class="big" style="font-size:34px">Expenses</div>
-    <p class="dim" style="margin:0;line-height:1.5">Connect to your server once on this device. You'll find the address in your setup guide (README).</p>
-    <label class="f">Server address<input id="sApi" class="field" type="url" inputmode="url" autocomplete="off" placeholder="https://expense-manager.yourname.workers.dev"></label>
+    <p class="dim" style="margin:0;line-height:1.5">Enter your PIN once on this device to connect.</p>
+    <label class="f">Server address<input id="sApi" class="field" type="url" inputmode="url" autocomplete="off" value="https://expense-manager.twominutetrails.workers.dev"></label>
     <label class="f">PIN<input id="sPin" class="field" type="password" inputmode="numeric" autocomplete="current-password"></label>
     <button class="primary" data-act="connect">Connect</button>
     <p id="sErr" class="muted" style="margin:0;font-size:14px"></p></div>`;
