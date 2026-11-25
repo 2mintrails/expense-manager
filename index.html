@@ -1,0 +1,433 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Expenses">
+<meta name="theme-color" content="#111317">
+<title>Expenses</title>
+<link rel="manifest" href="manifest.json">
+<link rel="apple-touch-icon" href="icon.png">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=Inter:wght@400;500;600&display=swap">
+<style>
+  :root { --bg:#111317; --card:#1A1D23; --line:#2C3038; --soft:#22262D; --text:#ECEEF1; --muted:#9AA3AE; --dim:#B7BEC7;
+          --accent:#F2B354; --ok:#5EC4B6; --over:#FF8A65; }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { margin:0; background:var(--bg); color:var(--text); font-family:Inter, system-ui, sans-serif; }
+  body { padding: env(safe-area-inset-top) 0 calc(76px + env(safe-area-inset-bottom)); min-height:100vh; }
+  button, input { font-family:inherit; font-size:inherit; color:inherit; }
+  button { cursor:pointer; }
+  .wrap { max-width:480px; margin:0 auto; padding:14px 20px 20px; display:flex; flex-direction:column; gap:16px; }
+  .eyebrow { font-size:12px; font-weight:600; letter-spacing:.1em; text-transform:uppercase; color:var(--muted); }
+  .row { display:flex; justify-content:space-between; align-items:center; gap:10px; }
+  .card { background:var(--card); border-radius:18px; padding:18px; display:flex; flex-direction:column; gap:10px; }
+  .big { font-family:'Space Grotesk', sans-serif; font-weight:700; letter-spacing:-.02em; }
+  .muted { color:var(--muted); } .dim { color:var(--dim); }
+  .bar { height:8px; border-radius:4px; background:var(--line); overflow:hidden; }
+  .bar > div { height:100%; border-radius:4px; }
+  .primary { height:56px; border-radius:28px; border:none; background:var(--accent); color:#111317; font-size:17px; font-weight:600; width:100%; }
+  .ghost { height:44px; padding:0 16px; border-radius:12px; border:1px solid var(--line); background:transparent; font-size:14px; }
+  .field { height:44px; border-radius:12px; border:1px solid var(--line); background:var(--card); padding:0 14px; font-size:16px; width:100%; min-width:0; }
+  label.f { display:flex; flex-direction:column; gap:6px; font-size:12px; color:var(--muted); }
+  .chips { display:grid; grid-template-columns:repeat(4, minmax(0,1fr)); gap:8px; }
+  .chip { min-height:48px; border-radius:14px; border:1px solid var(--line); background:var(--card); font-size:13px; font-weight:500; line-height:1.15; padding:4px; }
+  .chip.on { border-color:var(--accent); background:#2A2418; }
+  .chip.new { border-style:dashed; background:transparent; color:var(--dim); }
+  .modes { display:flex; gap:8px; }
+  .mode { flex:1; height:40px; border-radius:20px; border:1px solid var(--line); background:transparent; font-size:13px; font-weight:500; }
+  .mode.on { background:var(--line); border-color:var(--muted); }
+  .keys { display:grid; grid-template-columns:repeat(3, minmax(0,1fr)); gap:8px; }
+  .key { height:46px; border-radius:14px; border:none; background:var(--card); font-size:24px; font-weight:500; }
+  .key:active { background:var(--line); }
+  .entry { display:flex; justify-content:space-between; align-items:center; padding:10px 0; border-bottom:1px solid var(--soft); width:100%; background:none; border-left:none; border-right:none; border-top:none; text-align:left; }
+  .entry small { display:block; font-size:12px; color:var(--muted); margin-top:2px; }
+  .del { height:36px; padding:0 14px; border-radius:10px; border:1px solid var(--over); background:transparent; color:var(--over); font-size:13px; }
+  nav { position:fixed; left:0; right:0; bottom:0; background:rgba(17,19,23,.96); border-top:1px solid var(--soft);
+        padding:8px 12px calc(8px + env(safe-area-inset-bottom)); display:flex; justify-content:space-around; }
+  nav button { flex:1; height:52px; border:none; background:none; color:var(--muted); font-size:12px; font-weight:500;
+               display:flex; flex-direction:column; align-items:center; justify-content:center; gap:3px; }
+  nav button.on { color:var(--text); }
+  nav button svg { width:22px; height:22px; }
+  .toast { position:fixed; left:50%; bottom:calc(92px + env(safe-area-inset-bottom)); transform:translateX(-50%); background:var(--text); color:#111317;
+           padding:10px 16px; border-radius:20px; font-size:14px; font-weight:500; opacity:0; transition:opacity .2s; pointer-events:none; white-space:nowrap; }
+  .toast.show { opacity:1; }
+  .hbars { display:flex; flex-direction:column; gap:10px; }
+  .hbar { display:grid; grid-template-columns:96px 1fr 72px; align-items:center; gap:10px; font-size:14px; }
+  .hidden { display:none !important; }
+  .catrow { display:grid; grid-template-columns:1fr 110px 44px; gap:8px; align-items:center; }
+  .iconbtn { width:44px; height:44px; border-radius:12px; border:1px solid var(--line); background:transparent; display:flex; align-items:center; justify-content:center; }
+</style>
+</head>
+<body>
+<div id="app"></div>
+<nav id="nav" class="hidden">
+  <button data-tab="month" aria-label="This month"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><rect x="3" y="5" width="18" height="16" rx="3"/><path d="M3 10h18M8 3v4M16 3v4"/></svg>Month</button>
+  <button data-tab="add" aria-label="Add expense"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 8v8M8 12h8"/></svg>Add</button>
+  <button data-tab="summary" aria-label="Summary"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M5 20V10M12 20V4M19 20v-7"/></svg>Summary</button>
+  <button data-tab="settings" aria-label="Settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>Settings</button>
+</nav>
+<div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+<script>
+"use strict";
+// ---------------- storage on this device ----------------
+const LS = {
+  get(k, d) { try { const v = localStorage.getItem(k); return v ? JSON.parse(v) : d; } catch (e) { return d; } },
+  set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} },
+};
+let cfg = LS.get("em.cfg", null);           // { api, pin }
+let queue = LS.get("em.queue", []);          // expenses saved while offline
+let cats = LS.get("em.cats", []);            // [{name, budget}]
+let monthCache = LS.get("em.month", {});     // last loaded month, for instant start
+
+const state = {
+  tab: "month",
+  view: startOfMonth(new Date()),            // month shown on Month / Summary
+  expenses: [], prev: [],                    // this month, previous month
+  add: { amt: "0", cat: null, mode: "UPI", note: "", date: "", adding: false, draft: "" },
+  openEntry: null,
+};
+
+// ---------------- small helpers ----------------
+const $ = (s) => document.querySelector(s);
+const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const inr = (n) => "₹" + Math.round(n).toLocaleString("en-IN");
+function startOfMonth(d) { return new Date(d.getFullYear(), d.getMonth(), 1); }
+function addMonths(d, n) { return new Date(d.getFullYear(), d.getMonth() + n, 1); }
+function monthName(d) { return d.toLocaleString("en-IN", { month: "long" }); }
+function monthKey(d) { return d.getFullYear() + "-" + (d.getMonth() + 1); }
+function sameMonth(a, b) { return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth(); }
+function todayStr() { const d = new Date(); return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"); }
+function timeLabel(ts) {
+  const d = new Date(ts), now = new Date();
+  const t = d.toLocaleTimeString("en-IN", { hour: "numeric", minute: "2-digit" });
+  const y = new Date(now); y.setDate(now.getDate() - 1);
+  if (d.toDateString() === now.toDateString()) return t;
+  if (d.toDateString() === y.toDateString()) return "Yesterday";
+  return d.toLocaleDateString("en-IN", { day: "numeric", month: "short" });
+}
+let toastTimer;
+function toast(msg) { const t = $("#toast"); t.textContent = msg; t.classList.add("show"); clearTimeout(toastTimer); toastTimer = setTimeout(() => t.classList.remove("show"), 2200); }
+
+// ---------------- talking to the server ----------------
+async function api(path, opts = {}) {
+  const res = await fetch(cfg.api + path, {
+    ...opts,
+    headers: { "X-PIN": cfg.pin, ...(opts.body ? { "Content-Type": "application/json" } : {}) },
+  });
+  if (res.status === 401) throw Object.assign(new Error("Wrong PIN"), { code: 401 });
+  if (res.status === 429) throw Object.assign(new Error("Too many wrong PINs. Try again in 15 minutes."), { code: 429 });
+  if (res.status === 400) throw Object.assign(new Error("The server didn't accept that entry"), { code: 400 });
+  if (!res.ok) throw new Error("Server error (" + res.status + ")");
+  return path === "/api/export" ? res.text() : res.json();
+}
+function range(d) { return "from=" + d.getTime() + "&to=" + addMonths(d, 1).getTime(); }
+
+async function loadMonth() {
+  const [cur, prev] = await Promise.all([
+    api("/api/expenses?" + range(state.view)),
+    api("/api/expenses?" + range(addMonths(state.view, -1))),
+  ]);
+  // keep offline entries visible until they reach the server
+  const ids = new Set(cur.map((e) => e.id));
+  const mine = queue.filter((e) => !ids.has(e.id) && e.ts >= state.view.getTime() && e.ts < addMonths(state.view, 1).getTime());
+  state.expenses = mine.concat(cur).sort((a, b) => b.ts - a.ts);
+  state.prev = prev;
+  if (sameMonth(state.view, new Date())) { monthCache = { key: monthKey(state.view), cur: state.expenses, prev }; LS.set("em.month", monthCache); }
+}
+async function loadCats() { cats = await api("/api/categories"); LS.set("em.cats", cats); }
+
+async function flushQueue() {
+  if (!cfg || !queue.length) return;
+  for (const e of queue.slice()) {
+    try { await api("/api/expenses", { method: "POST", body: JSON.stringify(e) }); queue = queue.filter((q) => q.id !== e.id); LS.set("em.queue", queue); }
+    catch (err) {
+      if (err.code === 400) { queue = queue.filter((q) => q.id !== e.id); LS.set("em.queue", queue); continue; } // bad entry: drop it
+      if (err.code) throw err;
+      return; // offline: try again later
+    }
+  }
+}
+
+async function refresh(quiet) {
+  try { await flushQueue(); await Promise.all([loadCats(), loadMonth()]); render(); }
+  catch (err) {
+    if (err.code === 401) { cfg = null; LS.set("em.cfg", null); render(); toast("PIN changed — please enter it again"); return; }
+    if (!quiet) toast(err.code === 429 ? err.message : "Offline — showing saved data");
+    render();
+  }
+}
+
+// ---------------- screens ----------------
+function render() {
+  $("#nav").classList.toggle("hidden", !cfg);
+  document.querySelectorAll("nav button").forEach((b) => b.classList.toggle("on", b.dataset.tab === state.tab));
+  const app = $("#app");
+  if (!cfg) { app.innerHTML = setupView(); return; }
+  app.innerHTML = { month: monthView, add: addView, summary: summaryView, settings: settingsView }[state.tab]();
+}
+
+function setupView() {
+  return `<div class="wrap" style="padding-top:48px">
+    <div class="big" style="font-size:34px">Expenses</div>
+    <p class="dim" style="margin:0;line-height:1.5">Connect to your server once on this device. You'll find the address in your setup guide (README).</p>
+    <label class="f">Server address<input id="sApi" class="field" type="url" inputmode="url" autocomplete="off" placeholder="https://expense-manager.yourname.workers.dev"></label>
+    <label class="f">PIN<input id="sPin" class="field" type="password" inputmode="numeric" autocomplete="current-password"></label>
+    <button class="primary" data-act="connect">Connect</button>
+    <p id="sErr" class="muted" style="margin:0;font-size:14px"></p></div>`;
+}
+
+function totals(list) { const t = {}; list.forEach((e) => { t[e.category] = (t[e.category] || 0) + e.amount; }); return t; }
+function sum(list) { return list.reduce((s, e) => s + e.amount, 0); }
+
+function monthView() {
+  const spent = sum(state.expenses);
+  const budget = cats.reduce((s, c) => s + (c.budget || 0), 0);
+  const isNow = sameMonth(state.view, new Date());
+  const now = new Date();
+  const daysInMonth = new Date(state.view.getFullYear(), state.view.getMonth() + 1, 0).getDate();
+  const daysLeft = isNow ? daysInMonth - now.getDate() + 1 : 0;
+  const left = budget - spent;
+  const t = totals(state.expenses);
+  const names = cats.map((c) => c.name);
+  Object.keys(t).forEach((n) => { if (!names.includes(n)) names.push(n); });
+  const rows = names.map((n) => {
+    const b = (cats.find((c) => c.name === n) || {}).budget || 0, s = t[n] || 0;
+    return { n, s, b };
+  }).filter((r) => r.s > 0 || r.b > 0).sort((a, b) => b.s - a.s);
+  const pct = budget ? Math.min(100, Math.round(spent / budget * 100)) : 0;
+  return `<div class="wrap">
+    <div class="row"><button class="ghost" data-act="prevMonth" aria-label="Previous month">‹</button>
+      <span class="eyebrow">${esc(monthName(state.view))} ${state.view.getFullYear()}</span>
+      <button class="ghost" data-act="nextMonth" aria-label="Next month" ${isNow ? "disabled style='opacity:.3'" : ""}>›</button></div>
+    <div class="card">
+      <span class="muted" style="font-size:13px">${isNow ? "Spent so far" : "Spent"}</span>
+      <div style="display:flex;align-items:baseline;gap:8px;flex-wrap:wrap"><span class="big" style="font-size:40px">${inr(spent)}</span>
+        ${budget ? `<span class="muted" style="font-size:14px">of ${inr(budget)}</span>` : ""}</div>
+      ${budget ? `<div class="bar" aria-hidden="true"><div style="width:${pct}%;background:${spent > budget ? "var(--over)" : "var(--accent)"}"></div></div>` : ""}
+      <div class="row dim" style="font-size:13px">
+        ${budget && isNow ? (left > 0 ? `<span>Safe to spend today: <strong style="color:var(--text)">${inr(left / daysLeft)}</strong></span>` : `<span style="color:var(--over)">${inr(-left)} over budget</span>`)
+          : budget ? `<span>${left >= 0 ? inr(left) + " under budget" : inr(-left) + " over budget"}</span>` : `<span>Set budgets in Settings to track limits</span>`}
+        ${isNow ? `<span>${daysLeft} day${daysLeft === 1 ? "" : "s"} left</span>` : ""}</div>
+    </div>
+    ${rows.length ? `<div style="display:flex;flex-direction:column;gap:12px"><span class="eyebrow">By category</span>
+      ${rows.map((r) => {
+        const over = r.b && r.s > r.b, near = r.b && !over && r.s / r.b >= .9;
+        const color = !r.b ? "var(--muted)" : over ? "var(--over)" : near ? "var(--accent)" : "var(--ok)";
+        const w = r.b ? Math.min(100, Math.round(r.s / r.b * 100)) : 100;
+        return `<div style="display:flex;flex-direction:column;gap:6px"><div class="row" style="font-size:14px"><span>${esc(r.n)}</span>
+          <span style="color:${over ? "var(--over)" : "var(--dim)"}">${inr(r.s)}${r.b ? " / " + inr(r.b) : ""}</span></div>
+          <div class="bar" style="height:6px" aria-hidden="true"><div style="width:${w}%;background:${color}"></div></div></div>`;
+      }).join("")}</div>` : ""}
+    <div><span class="eyebrow">Entries</span>
+      ${state.expenses.length ? state.expenses.map((e) => `
+        <button class="entry" data-act="openEntry" data-id="${esc(e.id)}">
+          <span>${esc(e.note || e.category)}<small>${esc(e.category)} · ${esc(e.mode)} · ${esc(timeLabel(e.ts))}${queue.some((q) => q.id === e.id) ? " · waiting to sync" : ""}</small></span>
+          <span style="font-weight:600">${inr(e.amount)}</span></button>
+        ${state.openEntry === e.id ? `<div class="row" style="padding:8px 0"><span class="muted" style="font-size:13px">Delete this entry?</span><button class="del" data-act="delete" data-id="${esc(e.id)}">Delete</button></div>` : ""}`).join("")
+      : `<p class="muted" style="font-size:14px">Nothing logged ${isNow ? "yet this month" : "this month"}.</p>`}
+    </div></div>`;
+}
+
+function addView() {
+  const a = state.add;
+  if (!a.cat || !cats.some((c) => c.name === a.cat)) a.cat = cats[0] ? cats[0].name : null;
+  if (!a.date) a.date = todayStr();
+  return `<div class="wrap">
+    <div class="row"><span class="eyebrow">Add expense</span>
+      <input id="aDate" type="date" value="${esc(a.date)}" max="${todayStr()}" aria-label="Date" style="background:none;border:none;color:var(--muted);font-size:13px;text-align:right"></div>
+    <div style="display:flex;flex-direction:column;align-items:center;gap:4px;padding:2px 0">
+      <span id="aAmt" class="big" style="font-size:48px">${inr(Number(a.amt))}</span>
+      <span style="font-size:14px;color:var(--accent);font-weight:500">${esc(a.cat || "Pick a category")} · ${esc(a.mode)}</span></div>
+    <div class="chips">
+      ${cats.map((c) => `<button class="chip ${c.name === a.cat ? "on" : ""}" data-act="cat" data-name="${esc(c.name)}">${esc(c.name)}</button>`).join("")}
+      <button class="chip new" data-act="newCat" aria-label="Add a new category">+ New</button></div>
+    <div class="modes">${["UPI", "Card", "Cash"].map((m) => `<button class="mode ${m === a.mode ? "on" : ""}" data-act="mode" data-mode="${m}">${m}</button>`).join("")}</div>
+    ${a.adding ? `<div style="display:flex;flex-direction:column;gap:6px"><label for="aNew" style="font-size:12px;color:var(--muted)">New category name</label>
+      <div style="display:flex;gap:8px"><input id="aNew" class="field" maxlength="40" placeholder="e.g. Kids, Pets, Gifts" value="${esc(a.draft)}" style="border-color:var(--accent)">
+      <button class="ghost" data-act="cancelCat">Cancel</button><button class="ghost" data-act="saveCat" style="background:var(--accent);color:#111317;border:none;font-weight:600">Add</button></div></div>`
+    : `<label class="f">Note (optional)<input id="aNote" class="field" maxlength="120" placeholder="e.g. lunch with team" value="${esc(a.note)}"></label>`}
+    <div class="keys">${["1","2","3","4","5","6","7","8","9","00","0","del"].map((k) =>
+      `<button class="key" data-act="key" data-k="${k}" aria-label="${k === "del" ? "Delete digit" : k}">${k === "del" ? "⌫" : k}</button>`).join("")}</div>
+    <button class="primary" data-act="save">Save</button></div>`;
+}
+
+function summarySentences(cur, prev) {
+  const out = [];
+  const tc = totals(cur), tp = totals(prev);
+  const ranked = Object.entries(tc).sort((a, b) => b[1] - a[1]);
+  if (!ranked.length) return ["Nothing logged this month."];
+  const [topName, topAmt] = ranked[0];
+  const topDiff = topAmt - (tp[topName] || 0);
+  out.push(`${topName} was your biggest spend at ${inr(topAmt)}` + (prev.length && topDiff !== 0 ? `, ${topDiff > 0 ? "up" : "down"} ${inr(Math.abs(topDiff))} from last month.` : "."));
+  const over = cats.filter((c) => c.budget && (tc[c.name] || 0) > c.budget);
+  if (over.length) out.push(over.map((c) => `${c.name} went ${inr(tc[c.name] - c.budget)} over budget`).join("; ") + ".");
+  else if (cats.some((c) => c.budget)) out.push("Every category stayed within its budget.");
+  if (prev.length) {
+    const all = new Set(Object.keys(tc).concat(Object.keys(tp)));
+    let up = null, down = null;
+    all.forEach((n) => { if (n === topName) return; const d = (tc[n] || 0) - (tp[n] || 0);
+      if (d > 0 && (!up || d > up[1])) up = [n, d]; if (d < 0 && (!down || d < down[1])) down = [n, d]; });
+    if (up) out.push(`${up[0]} rose ${inr(up[1])} compared with last month.`);
+    if (down) out.push(`${down[0]} dropped ${inr(-down[1])} compared with last month.`);
+  }
+  return out;
+}
+
+function summaryView() {
+  const cur = state.expenses, prev = state.prev;
+  const spent = sum(cur), budget = cats.reduce((s, c) => s + (c.budget || 0), 0);
+  const isNow = sameMonth(state.view, new Date());
+  const ranked = Object.entries(totals(cur)).sort((a, b) => b[1] - a[1]);
+  const max = ranked.length ? ranked[0][1] : 1;
+  const biggest = cur.reduce((m, e) => (e.amount > (m ? m.amount : 0) ? e : m), null);
+  return `<div class="wrap">
+    <div class="row"><button class="ghost" data-act="prevMonth" aria-label="Previous month">‹</button>
+      <span class="eyebrow">${esc(monthName(state.view))} ${isNow ? "so far" : "in review"}</span>
+      <button class="ghost" data-act="nextMonth" aria-label="Next month" ${isNow ? "disabled style='opacity:.3'" : ""}>›</button></div>
+    <div style="display:flex;flex-direction:column;gap:6px"><span class="big" style="font-size:40px">${inr(spent)}</span>
+      ${budget ? `<span style="font-size:15px;font-weight:500;color:${spent > budget ? "var(--over)" : "var(--ok)"}">${inr(Math.abs(budget - spent))} ${spent > budget ? "over" : "under"} your ${inr(budget)} budget</span>` : ""}</div>
+    <div class="card"><span class="eyebrow">In plain words</span>
+      ${summarySentences(cur, prev).map((s) => `<p style="margin:0;font-size:15px;line-height:1.5">${esc(s)}</p>`).join("")}</div>
+    ${ranked.length ? `<div style="display:flex;flex-direction:column;gap:12px"><span class="eyebrow">Where it went</span><div class="hbars">
+      ${ranked.map(([n, a]) => `<div class="hbar"><span>${esc(n)}</span><div class="bar" style="height:10px;background:var(--soft)" aria-hidden="true"><div style="width:${Math.round(a / max * 100)}%;background:var(--accent)"></div></div><span class="dim" style="text-align:right">${inr(a)}</span></div>`).join("")}
+      </div></div>` : ""}
+    <div style="display:flex;gap:10px">
+      <div class="card" style="flex:1;padding:14px;gap:4px;border-radius:14px"><span class="muted" style="font-size:12px">Entries logged</span><span class="big" style="font-size:24px">${cur.length}</span></div>
+      <div class="card" style="flex:1;padding:14px;gap:4px;border-radius:14px"><span class="muted" style="font-size:12px">Biggest single spend</span><span class="big" style="font-size:24px">${biggest ? inr(biggest.amount) : "—"}</span></div>
+    </div></div>`;
+}
+
+function settingsView() {
+  return `<div class="wrap">
+    <span class="eyebrow">Categories &amp; monthly budgets</span>
+    <p class="muted" style="margin:0;font-size:13px;line-height:1.5">Leave a budget at 0 if you don't want a limit. Removing a category keeps its past entries.</p>
+    <div id="catList" style="display:flex;flex-direction:column;gap:8px">
+      ${cats.map((c, i) => `<div class="catrow">
+        <input class="field" data-i="${i}" data-k="name" value="${esc(c.name)}" maxlength="40" aria-label="Category name">
+        <input class="field" data-i="${i}" data-k="budget" value="${c.budget || ""}" inputmode="numeric" placeholder="₹0" aria-label="Monthly budget for ${esc(c.name)}">
+        <button class="iconbtn" data-act="rmCat" data-i="${i}" aria-label="Remove ${esc(c.name)}"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg></button></div>`).join("")}
+    </div>
+    <div style="display:flex;gap:8px"><button class="ghost" data-act="addCatRow" style="flex:1">+ Add category</button>
+      <button class="ghost" data-act="saveCats" style="flex:1;background:var(--accent);color:#111317;border:none;font-weight:600">Save changes</button></div>
+    <span class="eyebrow" style="margin-top:12px">Backup</span>
+    <button class="ghost" data-act="export">Download all expenses (CSV)</button>
+    <span class="eyebrow" style="margin-top:12px">This device</span>
+    <p class="muted" style="margin:0;font-size:13px;word-break:break-all">Connected to ${esc(cfg.api)}</p>
+    <button class="ghost" data-act="logout">Lock this device (forget PIN)</button></div>`;
+}
+
+// ---------------- actions ----------------
+function readCatRows() {
+  return Array.from(document.querySelectorAll("#catList .catrow")).map((row) => ({
+    name: row.querySelector('[data-k="name"]').value.trim(),
+    budget: Math.max(0, Math.round(Number(row.querySelector('[data-k="budget"]').value.replace(/[^0-9]/g, "")) || 0)),
+  }));
+}
+async function saveCatsList(list, msg) {
+  const clean = list.filter((c) => c.name);
+  const names = clean.map((c) => c.name.toLowerCase());
+  if (!clean.length) return toast("Keep at least one category");
+  if (new Set(names).size !== names.length) return toast("Two categories have the same name");
+  try { cats = await api("/api/categories", { method: "PUT", body: JSON.stringify(clean) }); LS.set("em.cats", cats); toast(msg || "Saved"); }
+  catch (e) { toast(e.code ? e.message : "You're offline — try again when connected"); }
+  render();
+}
+
+async function onAction(btn) {
+  const act = btn.dataset.act, a = state.add;
+  if (act === "connect") {
+    const apiUrl = $("#sApi").value.trim().replace(/\/+$/, ""), pin = $("#sPin").value.trim();
+    if (!/^https:\/\//.test(apiUrl) || !pin) { $("#sErr").textContent = "Enter the https:// address and your PIN."; return; }
+    cfg = { api: apiUrl, pin };
+    try { await api("/api/ping"); LS.set("em.cfg", cfg); await refresh(); }
+    catch (e) { cfg = null; $("#nav").classList.add("hidden"); $("#sErr").textContent = e.code ? e.message : "Couldn't reach the server. Check the address."; }
+    return;
+  }
+  if (act === "key") {
+    const k = btn.dataset.k;
+    if (k === "del") a.amt = a.amt.length > 1 ? a.amt.slice(0, -1) : "0";
+    else if (a.amt.length < 8) a.amt = a.amt === "0" ? (k === "00" ? "0" : k) : a.amt + k;
+    $("#aAmt").textContent = inr(Number(a.amt)); return;
+  }
+  if (act === "cat") { keepAddInputs(); a.cat = btn.dataset.name; return render(); }
+  if (act === "mode") { keepAddInputs(); a.mode = btn.dataset.mode; return render(); }
+  if (act === "newCat") { keepAddInputs(); a.adding = true; a.draft = ""; render(); const i = $("#aNew"); if (i) i.focus(); return; }
+  if (act === "cancelCat") { a.adding = false; return render(); }
+  if (act === "saveCat") {
+    const n = ($("#aNew").value || "").trim().slice(0, 40);
+    a.adding = false;
+    if (!n) return render();
+    if (cats.some((c) => c.name.toLowerCase() === n.toLowerCase())) { a.cat = cats.find((c) => c.name.toLowerCase() === n.toLowerCase()).name; return render(); }
+    a.cat = n;
+    return saveCatsList(cats.concat([{ name: n, budget: 0 }]), "Added " + n);
+  }
+  if (act === "save") {
+    keepAddInputs();
+    const amount = Number(a.amt);
+    if (!amount) return toast("Enter an amount");
+    if (!a.cat) return toast("Pick a category");
+    const now = new Date(), [y, m, d] = a.date.split("-").map(Number);
+    const when = a.date === todayStr() ? now : new Date(y, m - 1, d, 12, 0);
+    const e = { id: crypto.randomUUID(), ts: when.getTime(), amount, category: a.cat, mode: a.mode, note: a.note.trim() };
+    queue.push(e); LS.set("em.queue", queue);
+    if (sameMonth(new Date(e.ts), state.view)) state.expenses = [e].concat(state.expenses).sort((p, q) => q.ts - p.ts);
+    state.add = { amt: "0", cat: a.cat, mode: a.mode, note: "", date: todayStr(), adding: false, draft: "" };
+    render(); toast("Saved " + inr(amount) + " · " + e.category);
+    try { await flushQueue(); } catch (err) {}
+    if (state.tab === "month") render();
+    return;
+  }
+  if (act === "prevMonth" || act === "nextMonth") {
+    state.view = addMonths(state.view, act === "prevMonth" ? -1 : 1);
+    state.expenses = []; state.prev = []; state.openEntry = null; render(); return refresh();
+  }
+  if (act === "openEntry") { state.openEntry = state.openEntry === btn.dataset.id ? null : btn.dataset.id; return render(); }
+  if (act === "delete") {
+    const id = btn.dataset.id;
+    if (queue.some((q) => q.id === id)) { queue = queue.filter((q) => q.id !== id); LS.set("em.queue", queue); }
+    try { await api("/api/expenses/" + encodeURIComponent(id), { method: "DELETE" }); }
+    catch (e) { return toast(e.code ? e.message : "You're offline — delete when connected"); }
+    state.expenses = state.expenses.filter((x) => x.id !== id); state.openEntry = null; render(); toast("Deleted"); return;
+  }
+  if (act === "addCatRow") { cats = readCatRows().concat([{ name: "", budget: 0 }]); render(); const last = document.querySelectorAll('#catList [data-k="name"]'); last[last.length - 1].focus(); return; }
+  if (act === "rmCat") { const rows = readCatRows(); rows.splice(Number(btn.dataset.i), 1); cats = rows; return render(); }
+  if (act === "saveCats") return saveCatsList(readCatRows());
+  if (act === "export") {
+    try {
+      const csv = await api("/api/export");
+      const blob = new Blob([csv], { type: "text/csv" });
+      const link = document.createElement("a");
+      link.href = URL.createObjectURL(blob); link.download = "expenses-" + todayStr() + ".csv";
+      document.body.appendChild(link); link.click(); link.remove();
+      setTimeout(() => URL.revokeObjectURL(link.href), 5000);
+    } catch (e) { toast(e.code ? e.message : "You're offline — try again when connected"); }
+    return;
+  }
+  if (act === "logout") { cfg = null; LS.set("em.cfg", null); state.tab = "month"; render(); }
+}
+function keepAddInputs() {
+  const n = $("#aNote"), d = $("#aDate"), c = $("#aNew");
+  if (n) state.add.note = n.value; if (d && d.value) state.add.date = d.value; if (c) state.add.draft = c.value;
+}
+
+document.addEventListener("click", (ev) => {
+  const tab = ev.target.closest("nav button");
+  if (tab) { keepAddInputs(); state.tab = tab.dataset.tab; state.openEntry = null; render(); if (tab.dataset.tab !== "add") refresh(true); return; }
+  const btn = ev.target.closest("[data-act]");
+  if (btn) onAction(btn);
+});
+document.addEventListener("change", (ev) => { if (ev.target.id === "aDate" && ev.target.value) state.add.date = ev.target.value; });
+window.addEventListener("online", () => refresh(true));
+document.addEventListener("visibilitychange", () => { if (!document.hidden && cfg) refresh(true); });
+
+// ---------------- start ----------------
+if (cfg && monthCache.key === monthKey(state.view)) { state.expenses = monthCache.cur || []; state.prev = monthCache.prev || []; }
+render();
+if (cfg) refresh(true);
+</script>
+</body>
+</html>

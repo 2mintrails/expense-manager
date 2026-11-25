@@ -1,0 +1,17 @@
+# Cloudflare settings for the Expense Manager server.
+name = "expense-manager"
+main = "worker/index.js"
+compatibility_date = "2025-09-01"
+
+# Only the app's own web address may talk to this server.
+[vars]
+ALLOWED_ORIGIN = "https://2mintrails.github.io"
+
+# The Store: one private SQLite database that holds all expenses.
+[[durable_objects.bindings]]
+name = "STORE"
+class_name = "Store"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["Store"]
