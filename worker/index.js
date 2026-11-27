@@ -7,6 +7,12 @@ const DEFAULT_CATEGORIES = ["Travel", "Rent", "Food", "Groceries", "Domestic Hel
 const DEFAULT_INCOME = ["Salary", "Freelance", "Interest", "Other"];
 const KINDS = ["expense", "income"];
 const MODES = ["UPI", "Credit card", "Debit card", "Cash", "Auto-debit"];
+// The two people in the house. Each has their own PIN (a Cloudflare secret).
+const USERS = [
+  { id: "shivam", name: "Shivam", pinVar: "APP_PIN" },
+  { id: "wife", name: "Wife", pinVar: "APP_PIN_WIFE" },
+];
+const USER_IDS = USERS.map((u) => u.id);
 const MAX_FAILS = 8;               // wrong PINs allowed before a lockout
 const LOCK_MS = 15 * 60 * 1000;    // lockout length
 
@@ -42,6 +48,17 @@ export class Store extends DurableObject {
     this.sql.exec(`UPDATE expenses SET mode = 'Debit card' WHERE mode = 'Card'`);
     seed("expense", DEFAULT_CATEGORIES);
     seed("income", DEFAULT_INCOME);
+    // v4: two people. Every entry has an owner; budgets are per person.
+    const hasOwner = this.sql.exec(`PRAGMA table_info(expenses)`).toArray().some((c) => c.name === "owner");
+    if (!hasOwner) this.sql.exec(`ALTER TABLE expenses ADD COLUMN owner TEXT NOT NULL DEFAULT 'shivam'`);
+    this.sql.exec(`CREATE TABLE IF NOT EXISTS budgets (owner TEXT NOT NULL, kind TEXT NOT NULL, name TEXT NOT NULL,
+      amount INTEGER NOT NULL, PRIMARY KEY (owner, kind, name))`);
+    if (this.meta("v4", "") !== "done") {
+      // the budgets set so far were Shivam's
+      this.sql.exec(`INSERT OR IGNORE INTO budgets (owner, kind, name, amount)
+        SELECT 'shivam', kind, name, budget FROM categories WHERE budget > 0`);
+      this.setMeta("v4", "done");
+    }
   }
 
   meta(k, fallback) {
@@ -63,34 +80,55 @@ export class Store extends DurableObject {
     return "wrong";
   }
 
+  // Category names are shared by the house; each person has their own budget per category.
   listCategories(kind) {
-    return this.sql.exec(`SELECT name, budget FROM categories WHERE kind = ? ORDER BY pos`, kind).toArray();
+    const rows = this.sql.exec(`SELECT name FROM categories WHERE kind = ? ORDER BY pos`, kind).toArray();
+    const budgets = this.sql.exec(`SELECT owner, name, amount FROM budgets WHERE kind = ?`, kind).toArray();
+    return rows.map((r) => {
+      const b = {};
+      USER_IDS.forEach((u) => { b[u] = 0; });
+      budgets.filter((x) => x.name === r.name).forEach((x) => { b[x.owner] = x.amount; });
+      return { name: r.name, budgets: b };
+    });
   }
-  saveCategories(kind, list) {
+  saveCategories(kind, list, owner) {
     this.ctx.storage.transactionSync(() => {
       this.sql.exec(`DELETE FROM categories WHERE kind = ?`, kind);
-      list.forEach((c, i) => this.sql.exec(`INSERT INTO categories (name, kind, budget, pos) VALUES (?, ?, ?, ?)`, c.name, kind, c.budget, i));
+      list.forEach((c, i) => this.sql.exec(`INSERT INTO categories (name, kind, budget, pos) VALUES (?, ?, 0, ?)`, c.name, kind, i));
+      // this person's budgets are replaced; others keep theirs (unless the category was removed)
+      this.sql.exec(`DELETE FROM budgets WHERE kind = ? AND owner = ?`, kind, owner);
+      list.forEach((c) => { if (c.budget > 0) this.sql.exec(`INSERT INTO budgets (owner, kind, name, amount) VALUES (?, ?, ?, ?)`, owner, kind, c.name, c.budget); });
+      this.sql.exec(`DELETE FROM budgets WHERE kind = ? AND name NOT IN (SELECT name FROM categories WHERE kind = ?)`, kind, kind);
     });
     return this.listCategories(kind);
   }
 
   listExpenses(from, to) {
-    return this.sql.exec(`SELECT id, ts, amount, category, mode, note, kind FROM expenses
+    return this.sql.exec(`SELECT id, ts, amount, category, mode, note, kind, owner FROM expenses
       WHERE ts >= ? AND ts < ? ORDER BY ts DESC`, from, to).toArray();
   }
-  addExpense(e) {
-    // Same id twice (an offline retry) just overwrites, so nothing is doubled.
-    this.sql.exec(`INSERT INTO expenses (id, ts, amount, category, mode, note, kind) VALUES (?, ?, ?, ?, ?, ?, ?)
-      ON CONFLICT(id) DO UPDATE SET ts = excluded.ts, amount = excluded.amount, category = excluded.category,
-      mode = excluded.mode, note = excluded.note, kind = excluded.kind`, e.id, e.ts, e.amount, e.category, e.mode, e.note, e.kind);
-    return e;
+  ownerOf(id) {
+    const row = this.sql.exec(`SELECT owner FROM expenses WHERE id = ?`, id).toArray()[0];
+    return row ? row.owner : null;
   }
-  deleteExpense(id) {
-    this.sql.exec(`DELETE FROM expenses WHERE id = ?`, id);
+  // Returns false if the entry belongs to the other person (view only).
+  addExpense(e, owner) {
+    const current = this.ownerOf(e.id);
+    if (current && current !== owner) return false;
+    // Same id twice (an offline retry or an edit) just overwrites, so nothing is doubled.
+    this.sql.exec(`INSERT INTO expenses (id, ts, amount, category, mode, note, kind, owner) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET ts = excluded.ts, amount = excluded.amount, category = excluded.category,
+      mode = excluded.mode, note = excluded.note, kind = excluded.kind`, e.id, e.ts, e.amount, e.category, e.mode, e.note, e.kind, owner);
+    return true;
+  }
+  deleteExpense(id, owner) {
+    const current = this.ownerOf(id);
+    if (current && current !== owner) return false;
+    this.sql.exec(`DELETE FROM expenses WHERE id = ? AND owner = ?`, id, owner);
     return true;
   }
   allExpenses() {
-    return this.sql.exec(`SELECT id, ts, amount, category, mode, note, kind FROM expenses ORDER BY ts`).toArray();
+    return this.sql.exec(`SELECT id, ts, amount, category, mode, note, kind, owner FROM expenses ORDER BY ts`).toArray();
   }
 }
 
@@ -161,14 +199,21 @@ export default {
     if (!env.APP_PIN) return json({ error: "server has no PIN set" }, 500, headers);
 
     const store = env.STORE.get(env.STORE.idFromName("me"));
-    const match = await pinMatches(request.headers.get("X-PIN") || "", env.APP_PIN);
-    const pinState = await store.recordPin(match, Date.now());
+    // Whose PIN is this? That decides who is signed in.
+    const given = request.headers.get("X-PIN") || "";
+    let user = null;
+    for (const u of USERS) {
+      if (env[u.pinVar] && (await pinMatches(given, env[u.pinVar]))) { user = u; break; }
+    }
+    const pinState = await store.recordPin(!!user, Date.now());
     if (pinState === "locked") return json({ error: "locked", message: "Too many wrong PINs. Try again in 15 minutes." }, 429, headers);
     if (pinState !== "ok") return json({ error: "wrong pin" }, 401, headers);
 
     const path = url.pathname;
     try {
       if (path === "/api/ping" && request.method === "GET") return json({ ok: true }, 200, headers);
+      if (path === "/api/me" && request.method === "GET")
+        return json({ user: user.id, name: user.name, users: USERS.map((u) => ({ id: u.id, name: u.name, ready: !!env[u.pinVar] })) }, 200, headers);
 
       const kind = KINDS.includes(url.searchParams.get("kind")) ? url.searchParams.get("kind") : "expense";
       if (path === "/api/categories" && request.method === "GET")
@@ -176,7 +221,7 @@ export default {
       if (path === "/api/categories" && request.method === "PUT") {
         const list = validCategories(await request.json());
         if (!list) return json({ error: "bad categories" }, 400, headers);
-        return json(await store.saveCategories(kind, list), 200, headers);
+        return json(await store.saveCategories(kind, list, user.id), 200, headers);
       }
 
       if (path === "/api/expenses" && request.method === "GET") {
@@ -188,21 +233,23 @@ export default {
       if (path === "/api/expenses" && request.method === "POST") {
         const e = validExpense(await request.json());
         if (!e) return json({ error: "bad expense" }, 400, headers);
-        return json(await store.addExpense(e), 200, headers);
+        if (!(await store.addExpense(e, user.id))) return json({ error: "view only", message: "That entry belongs to someone else." }, 403, headers);
+        return json({ ...e, owner: user.id }, 200, headers);
       }
       const del = path.match(/^\/api\/expenses\/([A-Za-z0-9-]{1,64})$/);
       if (del && request.method === "DELETE") {
-        await store.deleteExpense(del[1]);
+        if (!(await store.deleteExpense(del[1], user.id))) return json({ error: "view only", message: "That entry belongs to someone else." }, 403, headers);
         return json({ ok: true }, 200, headers);
       }
 
       if (path === "/api/export" && request.method === "GET") {
         const rows = await store.allExpenses();
-        const lines = ["date,time,type,amount,category,mode,note"];
+        const names = Object.fromEntries(USERS.map((u) => [u.id, u.name]));
+        const lines = ["date,time,person,type,amount,category,mode,note"];
         for (const r of rows) {
           const d = new Date(r.ts + 5.5 * 3600 * 1000); // shown in India time
           const iso = d.toISOString();
-          lines.push([iso.slice(0, 10), iso.slice(11, 16), r.kind, r.amount, r.category, r.mode, r.note].map(csvCell).join(","));
+          lines.push([iso.slice(0, 10), iso.slice(11, 16), names[r.owner] || r.owner, r.kind, r.amount, r.category, r.mode, r.note].map(csvCell).join(","));
         }
         return new Response(lines.join("\n") + "\n", {
           status: 200,

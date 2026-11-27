@@ -31,6 +31,14 @@ It shows this month against your budgets, a month-end summary in plain words, an
 - **Settings** — rename categories, set monthly budgets (0 = no limit), download a CSV backup, or lock the device.
 - **No signal?** Saves are kept on the phone and sent automatically once you're back online ("waiting to sync").
 
+## Two people (Home)
+
+Shivam and Wife each sign in with their own PIN, so every entry is tagged to whoever added it.
+The **Home | Shivam | Wife** switch on Month and Summary shows both of you added up, or one person.
+You can see each other's entries but only edit your own. Category names are shared; budgets are per person (Home adds them up).
+
+To turn on Wife's sign-in: add a repository secret **`EXPENSE_PIN_WIFE`** with her PIN, then run *Deploy server to Cloudflare* again.
+
 ## Changing the PIN
 
-Update the `EXPENSE_PIN` secret, then re-run the deploy workflow. Each device will ask for the new PIN.
+Update the `EXPENSE_PIN` (or `EXPENSE_PIN_WIFE`) secret, then re-run the deploy workflow. Each device will ask for the new PIN.

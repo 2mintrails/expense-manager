@@ -9,13 +9,24 @@ on:
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    env:
+      APP_PIN: ${{ secrets.EXPENSE_PIN }}
+      APP_PIN_WIFE: ${{ secrets.EXPENSE_PIN_WIFE }}
     steps:
       - uses: actions/checkout@v4
-      - uses: cloudflare/wrangler-action@v3
+      - name: Deploy server with Shivam's PIN
+        uses: cloudflare/wrangler-action@v3
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           secrets: |
             APP_PIN
-        env:
-          APP_PIN: ${{ secrets.EXPENSE_PIN }}
+      # Runs only once the EXPENSE_PIN_WIFE secret has been added on GitHub.
+      - name: Add Wife's PIN
+        if: env.APP_PIN_WIFE != ''
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          secrets: |
+            APP_PIN_WIFE

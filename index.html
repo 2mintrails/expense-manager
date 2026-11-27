@@ -61,6 +61,12 @@
   .hbars { display:flex; flex-direction:column; gap:10px; }
   .hbar { display:grid; grid-template-columns:118px 1fr 76px; align-items:center; gap:10px; font-size:14px; }
   .hidden { display:none !important; }
+  .who { display:flex; background:var(--card); border-radius:22px; padding:4px; gap:4px; }
+  .who button { flex:1; height:36px; border-radius:18px; border:none; background:transparent; color:var(--dim); font-size:14px; font-weight:600; }
+  .who button.on { background:var(--text); color:#111317; }
+  .badge { width:26px; height:26px; border-radius:13px; color:#111317; font-size:12px; font-weight:700; display:inline-flex; align-items:center; justify-content:center; flex-shrink:0; }
+  .pick { height:96px; border-radius:18px; border:1px solid var(--line); background:var(--card); display:flex; flex-direction:column; align-items:center; justify-content:center; gap:8px; font-size:15px; font-weight:600; }
+  .pick.on { border:2px solid var(--accent); }
   .catrow { display:grid; grid-template-columns:1fr 110px 44px; gap:8px; align-items:center; }
   .iconbtn { width:44px; height:44px; border-radius:12px; border:1px solid var(--line); background:transparent; display:flex; align-items:center; justify-content:center; }
 </style>
@@ -86,7 +92,22 @@ let cfg = LS.get("em.cfg", null);           // { api, pin }
 let queue = LS.get("em.queue", []);          // expenses saved while offline
 let cats = LS.get("em.cats", []);            // expense categories [{name, budget}]
 let incCats = LS.get("em.incCats", []);      // income categories [{name}]
-const APP_VERSION = "1.5";
+const APP_VERSION = "1.6";
+// ---- the house: two people, each signed in with their own PIN ----
+let users = LS.get("em.users", [{ id: "shivam", name: "Shivam" }, { id: "wife", name: "Wife" }]);
+const me = () => (cfg && cfg.user) || "shivam";
+const userName = (id) => (users.find((u) => u.id === id) || { name: id }).name;
+const USER_COLORS = ["#C9A96E", "#B7949E"];
+const userColor = (id) => USER_COLORS[Math.max(0, users.findIndex((u) => u.id === id)) % USER_COLORS.length];
+const ownerOf = (e) => e.owner || "shivam";
+// whose numbers are on screen: "home" (both added up) or one person
+const viewList = (list) => (state.who === "home" ? list : list.filter((e) => ownerOf(e) === state.who));
+// a category's budget for the person on screen (Home adds both up)
+function budgetOf(c, who = state.who) {
+  if (!c.budgets) return c.budget || 0;
+  return who === "home" ? Object.values(c.budgets).reduce((a, b) => a + (b || 0), 0) : c.budgets[who] || 0;
+}
+const badge = (id) => `<span class="badge" style="background:${userColor(id)}" aria-label="${esc(userName(id))}">${esc(userName(id).charAt(0))}</span>`;
 const MODES = ["UPI", "Credit card", "Debit card", "Cash", "Auto-debit"];
 const isCC = (e) => !isInc(e) && e.mode === "Credit card";
 const isInc = (e) => e.kind === "income";
@@ -110,6 +131,8 @@ const state = {
   expenses: [], prev: [],                    // this month, previous month
   add: { kind: "expense", amt: "0", cat: null, mode: "UPI", note: "", date: "", adding: false, draft: "" },
   edit: null,                               // the entry being edited, if any
+  who: "home",                               // Home | a person
+  pick: "shivam",                            // profile chosen on the sign-in screen
 };
 
 // ---------------- small helpers ----------------
@@ -143,6 +166,7 @@ async function api(path, opts = {}) {
   });
   if (res.status === 401) throw Object.assign(new Error("Wrong PIN"), { code: 401 });
   if (res.status === 429) throw Object.assign(new Error("Too many wrong PINs. Try again in 15 minutes."), { code: 429 });
+  if (res.status === 403) { const b = await res.json().catch(() => ({})); throw Object.assign(new Error(b.message || "That entry belongs to someone else."), { code: 403 }); }
   if (res.status === 400) throw Object.assign(new Error("The server didn't accept that entry"), { code: 400 });
   if (!res.ok) throw new Error("Server error (" + res.status + ")");
   return path === "/api/export" ? res.text() : res.json();
@@ -161,6 +185,11 @@ async function loadMonth() {
   state.prev = prev;
   if (sameMonth(state.view, new Date())) { monthCache = { key: monthKey(state.view), cur: state.expenses, prev }; LS.set("em.month", monthCache); }
 }
+async function loadMe() {
+  const r = await api("/api/me");
+  users = r.users; LS.set("em.users", users);
+  if (cfg.user !== r.user) { cfg.user = r.user; LS.set("em.cfg", cfg); }
+}
 async function loadCats() {
   [cats, incCats] = await Promise.all([api("/api/categories?kind=expense"), api("/api/categories?kind=income")]);
   LS.set("em.cats", cats); LS.set("em.incCats", incCats);
@@ -171,7 +200,7 @@ async function flushQueue() {
   for (const e of queue.slice()) {
     try { await api("/api/expenses", { method: "POST", body: JSON.stringify(e) }); queue = queue.filter((q) => q.id !== e.id); LS.set("em.queue", queue); }
     catch (err) {
-      if (err.code === 400) { queue = queue.filter((q) => q.id !== e.id); LS.set("em.queue", queue); continue; } // bad entry: drop it
+      if (err.code === 400 || err.code === 403) { queue = queue.filter((q) => q.id !== e.id); LS.set("em.queue", queue); continue; } // bad entry: drop it
       if (err.code) throw err;
       return; // offline: try again later
     }
@@ -179,7 +208,7 @@ async function flushQueue() {
 }
 
 async function refresh(quiet) {
-  try { await flushQueue(); await Promise.all([loadCats(), loadMonth()]); render(); }
+  try { await loadMe(); await flushQueue(); await Promise.all([loadCats(), loadMonth()]); render(); }
   catch (err) {
     if (err.code === 401) { cfg = null; LS.set("em.cfg", null); render(); toast("PIN changed — please enter it again"); return; }
     if (!quiet) toast(err.code === 429 ? err.message : "Offline — showing saved data");
@@ -199,47 +228,61 @@ function render() {
 
 function setupView() {
   return `<div class="wrap" style="padding-top:48px">
-    <div class="big" style="font-size:34px">Expenses</div>
-    <p class="dim" style="margin:0;line-height:1.5">Enter your PIN once on this device to connect.</p>
-    <label class="f">Server address<input id="sApi" class="field" type="url" inputmode="url" autocomplete="off" value="https://expense-manager.twominutetrails.workers.dev"></label>
-    <label class="f">PIN<input id="sPin" class="field" type="password" inputmode="numeric" autocomplete="current-password"></label>
-    <button class="primary" data-act="connect">Connect</button>
+    <span class="eyebrow">Home</span>
+    <div class="big" style="font-size:32px">Who's using this phone?</div>
+    <div style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px">
+      ${users.map((u) => `<button class="pick ${state.pick === u.id ? "on" : ""}" data-act="pick" data-id="${esc(u.id)}" style="--accent:${userColor(u.id)}">${badge(u.id).replace("26px", "36px")}${esc(u.name)}</button>`).join("")}</div>
+    <label class="f">${esc(userName(state.pick))}'s PIN<input id="sPin" class="field" type="password" inputmode="numeric" autocomplete="current-password"></label>
+    <button class="primary" data-act="connect">Sign in</button>
+    <p class="muted" style="margin:0;font-size:13px;line-height:1.5">Each of you has your own PIN. Everything you add is tagged to you; you can both see the whole house.</p>
+    <details class="muted" style="font-size:13px"><summary>Server address</summary>
+      <input id="sApi" class="field" type="url" inputmode="url" autocomplete="off" value="${esc((cfg && cfg.api) || LS.get("em.api", "https://expense-manager.twominutetrails.workers.dev"))}" style="margin-top:8px" aria-label="Server address"></details>
     <p id="sErr" class="muted" style="margin:0;font-size:14px"></p></div>`;
 }
 
 function totals(list) { const t = {}; list.forEach((e) => { t[e.category] = (t[e.category] || 0) + e.amount; }); return t; }
 function sum(list) { return list.reduce((s, e) => s + e.amount, 0); }
 
+function whoSwitch() {
+  return `<div class="who" role="group" aria-label="Whose numbers">${[{ id: "home", name: "Home" }].concat(users).map((u) =>
+    `<button data-act="who" data-who="${esc(u.id)}" class="${state.who === u.id ? "on" : ""}">${esc(u.name)}</button>`).join("")}</div>`;
+}
 function monthView() {
-  const spent = sum(spends(state.expenses)), income = sum(incomes(state.expenses));
-  const onCC = sum(state.expenses.filter(isCC)), fromAccount = spent - onCC;
-  const budget = cats.reduce((s, c) => s + (c.budget || 0), 0);
+  const L = viewList(state.expenses), home = state.who === "home", other = !home && state.who !== me();
+  const spent = sum(spends(L)), income = sum(incomes(L));
+  const onCC = sum(L.filter(isCC)), fromAccount = spent - onCC;
+  const budget = cats.reduce((s, c) => s + budgetOf(c), 0);
   const isNow = sameMonth(state.view, new Date());
   const now = new Date();
   const daysInMonth = new Date(state.view.getFullYear(), state.view.getMonth() + 1, 0).getDate();
   const daysLeft = isNow ? daysInMonth - now.getDate() + 1 : 0;
   const left = budget - spent;
-  const t = totals(spends(state.expenses));
+  const t = totals(spends(L));
   const names = cats.map((c) => c.name);
   Object.keys(t).forEach((n) => { if (!names.includes(n)) names.push(n); });
   const rows = names.map((n) => {
-    const b = (cats.find((c) => c.name === n) || {}).budget || 0, s = t[n] || 0;
+    const b = budgetOf(cats.find((c) => c.name === n) || {}), s = t[n] || 0;
     return { n, s, b };
   }).filter((r) => r.s > 0 || r.b > 0).sort((a, b) => b.s - a.s);
   const pct = budget ? Math.min(100, Math.round(spent / budget * 100)) : 0;
+  const people = home ? users.map((u) => { const l = state.expenses.filter((e) => ownerOf(e) === u.id);
+    return `<div class="row" style="font-size:13px"><span style="display:flex;align-items:center;gap:8px"><span aria-hidden="true" style="width:8px;height:8px;border-radius:4px;background:${userColor(u.id)}"></span>${esc(u.name)}</span><span class="dim">${inr(sum(incomes(l)))} in · ${inr(sum(spends(l)))} spent</span></div>`; }).join("") : "";
   return `<div class="wrap">
+    ${whoSwitch()}
+    ${other ? `<div class="row" style="justify-content:flex-start;gap:8px;background:var(--card);border-radius:12px;padding:10px 12px;font-size:13px;color:var(--dim)"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M2 12s4-7 10-7 10 7 10 7-4 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg>Viewing ${esc(userName(state.who))}'s month · view only</div>` : ""}
     <div class="row"><button class="ghost" data-act="prevMonth" aria-label="Previous month">‹</button>
       <span class="eyebrow">${esc(monthName(state.view))} ${state.view.getFullYear()}</span>
       <button class="ghost" data-act="nextMonth" aria-label="Next month" ${isNow ? "disabled style='opacity:.3'" : ""}>›</button></div>
     ${income ? `<div class="card">
-      <span class="muted" style="font-size:13px">Left this month</span>
+      <span class="muted" style="font-size:13px">${home ? "Home · left this month" : "Left this month"}</span>
       <span class="big" style="font-size:40px;color:${income - fromAccount < 0 ? "var(--over)" : "var(--ok)"}">${income - fromAccount < 0 ? "−" : ""}${inr(Math.abs(income - fromAccount))}</span>
       <div style="display:grid;grid-template-columns:repeat(${onCC ? 3 : 2},minmax(0,1fr));gap:10px">
         <div><span class="muted" style="font-size:12px;display:block">Income</span><span style="font-size:16px;font-weight:600">${inr(income)}</span></div>
         <div><span class="muted" style="font-size:12px;display:block">${onCC ? "Paid from account" : "Spent"}</span><span style="font-size:16px;font-weight:600">${inr(fromAccount)}</span></div>
         ${onCC ? `<div><span class="muted" style="font-size:12px;display:block">On credit card</span><span style="font-size:16px;font-weight:600;color:#8FA3C7">${inr(onCC)}</span></div>` : ""}</div>
-      ${onCC ? `<span class="muted" style="font-size:12px;line-height:1.4">Credit card spends count in your budget, but aren't taken from income.</span>` : ""}
-    </div>` : ""}
+      ${onCC ? `<span class="muted" style="font-size:12px;line-height:1.4">Credit card spends count in the budget, but aren't taken from income.</span>` : ""}
+      ${people ? `<div style="height:1px;background:var(--line)"></div><div style="display:flex;flex-direction:column;gap:6px">${people}</div>` : ""}
+    </div>` : home && state.expenses.length ? `<div class="card" style="gap:6px">${people}</div>` : ""}
     <div class="card">
       <span class="muted" style="font-size:13px">${isNow ? "Spent so far" : "Spent"}</span>
       <div style="display:flex;align-items:baseline;gap:8px;flex-wrap:wrap"><span class="big" style="font-size:40px">${inr(spent)}</span>
@@ -250,7 +293,7 @@ function monthView() {
           : budget ? `<span>${left >= 0 ? inr(left) + " under budget" : inr(-left) + " over budget"}</span>` : `<span>Set budgets in Settings to track limits</span>`}
         ${isNow ? `<span>${daysLeft} day${daysLeft === 1 ? "" : "s"} left</span>` : ""}</div>
     </div>
-    ${rows.length ? `<div style="display:flex;flex-direction:column;gap:12px"><span class="eyebrow">By category</span>
+    ${rows.length ? `<div style="display:flex;flex-direction:column;gap:12px"><span class="eyebrow">${home ? "Budgets · both of you" : other ? "Their budgets" : "By category"}</span>
       ${rows.map((r) => {
         const over = r.b && r.s > r.b, near = r.b && !over && r.s / r.b >= .9;
         const color = over ? "var(--over)" : catColor(r.n);
@@ -259,11 +302,11 @@ function monthView() {
           <span style="color:${over ? "var(--over)" : "var(--dim)"}">${inr(r.s)}${r.b ? " / " + inr(r.b) : ""}</span></div>
           <div class="bar" style="height:6px" aria-hidden="true"><div style="width:${w}%;background:${color}"></div></div></div>`;
       }).join("")}</div>` : ""}
-    <div><span class="eyebrow">Entries</span>
-      ${state.expenses.length ? state.expenses.map((e) => `
-        <button class="entry" data-act="openEntry" data-id="${esc(e.id)}">
-          <span>${esc(e.note || e.category)}<small>${isInc(e) ? "Income · " + esc(e.category) : esc(e.category) + " · " + esc(e.mode)} · ${esc(timeLabel(e.ts))}${queue.some((q) => q.id === e.id) ? " · waiting to sync" : ""}</small></span>
-          <span style="font-weight:600${isInc(e) ? ";color:var(--ok)" : ""}">${isInc(e) ? "+" : ""}${inr(e.amount)}</span></button>`).join("")
+    <div><span class="eyebrow">${home ? "Entries · both" : "Entries"}</span>
+      ${L.length ? L.map((e) => { const mine = ownerOf(e) === me(), tag = mine ? "button" : "div";
+        return `<${tag} class="entry" ${mine ? `data-act="openEntry" data-id="${esc(e.id)}"` : ""}>
+          <span style="display:flex;align-items:center;gap:10px">${home ? badge(ownerOf(e)) : ""}<span>${esc(e.note || e.category)}<small>${home ? esc(userName(ownerOf(e))) + " · " : ""}${isInc(e) ? "Income · " + esc(e.category) : esc(e.category) + " · " + esc(e.mode)} · ${esc(timeLabel(e.ts))}${queue.some((q) => q.id === e.id) ? " · waiting to sync" : ""}</small></span></span>
+          <span style="display:flex;align-items:center;gap:6px;font-weight:600${isInc(e) ? ";color:var(--ok)" : ""}">${mine ? "" : `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--muted)" stroke-width="2" role="img" aria-label="View only"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg>`}${isInc(e) ? "+" : ""}${inr(e.amount)}</span></${tag}>`; }).join("")
       : `<p class="muted" style="font-size:14px">Nothing logged ${isNow ? "yet this month" : "this month"}.</p>`}
     </div></div>`;
 }
@@ -295,22 +338,24 @@ function addView(a = state.add, editing = false) {
 
 function summarySentences(all, prevAll) {
   const out = [], cur = spends(all), prev = spends(prevAll);
+  const home = state.who === "home", mine = state.who === me();
+  const subj = home ? "Together you" : mine ? "You" : userName(state.who), poss = home || mine ? "your" : "their";
   const income = sum(incomes(all)), onCC = sum(all.filter(isCC)), spentAll = sum(cur) - onCC;
   if (income) {
     const kept = income - spentAll;
-    out.push(kept >= 0 ? `You kept ${inr(kept)} of your ${inr(income)} income (${Math.round(kept / income * 100)}%).`
-                       : `You spent ${inr(-kept)} more than you earned this month.`);
+    out.push(kept >= 0 ? `${subj} kept ${inr(kept)} of ${poss} ${inr(income)} income (${Math.round(kept / income * 100)}%).`
+                       : `${subj} spent ${inr(-kept)} more than ${home || mine ? "you" : "they"} earned this month.`);
   }
-  if (onCC) out.push(`${inr(onCC)} went on your credit card — counted as spending, not yet taken from income.`);
+  if (onCC) out.push(`${inr(onCC)} went on ${home ? "credit cards" : poss + " credit card"} — counted as spending, not yet taken from income.`);
   const tc = totals(cur), tp = totals(prev);
   const ranked = Object.entries(tc).sort((a, b) => b[1] - a[1]);
   if (!ranked.length) return out.length ? out : ["Nothing logged this month."];
   const [topName, topAmt] = ranked[0];
   const topDiff = topAmt - (tp[topName] || 0);
-  out.push(`${topName} was your biggest spend at ${inr(topAmt)}` + (prev.length && topDiff !== 0 ? `, ${topDiff > 0 ? "up" : "down"} ${inr(Math.abs(topDiff))} from last month.` : "."));
-  const over = cats.filter((c) => c.budget && (tc[c.name] || 0) > c.budget);
-  if (over.length) out.push(over.map((c) => `${c.name} went ${inr(tc[c.name] - c.budget)} over budget`).join("; ") + ".");
-  else if (cats.some((c) => c.budget)) out.push("Every category stayed within its budget.");
+  out.push(`${topName} was ${poss} biggest spend at ${inr(topAmt)}` + (prev.length && topDiff !== 0 ? `, ${topDiff > 0 ? "up" : "down"} ${inr(Math.abs(topDiff))} from last month.` : "."));
+  const over = cats.filter((c) => budgetOf(c) && (tc[c.name] || 0) > budgetOf(c));
+  if (over.length) out.push(over.map((c) => `${c.name} went ${inr(tc[c.name] - budgetOf(c))} over budget`).join("; ") + ".");
+  else if (cats.some((c) => budgetOf(c))) out.push("Every category stayed within its budget.");
   if (prev.length) {
     const all = new Set(Object.keys(tc).concat(Object.keys(tp)));
     let up = null, down = null;
@@ -323,20 +368,21 @@ function summarySentences(all, prevAll) {
 }
 
 function summaryView() {
-  const all = state.expenses, cur = spends(all);
-  const spent = sum(cur), budget = cats.reduce((s, c) => s + (c.budget || 0), 0);
+  const all = viewList(state.expenses), cur = spends(all);
+  const spent = sum(cur), budget = cats.reduce((s, c) => s + budgetOf(c), 0);
   const isNow = sameMonth(state.view, new Date());
   const ranked = Object.entries(totals(cur)).sort((a, b) => b[1] - a[1]);
   const max = ranked.length ? ranked[0][1] : 1;
   const biggest = cur.reduce((m, e) => (e.amount > (m ? m.amount : 0) ? e : m), null);
   return `<div class="wrap">
+    ${whoSwitch()}
     <div class="row"><button class="ghost" data-act="prevMonth" aria-label="Previous month">‹</button>
       <span class="eyebrow">${esc(monthName(state.view))} ${isNow ? "so far" : "in review"}</span>
       <button class="ghost" data-act="nextMonth" aria-label="Next month" ${isNow ? "disabled style='opacity:.3'" : ""}>›</button></div>
     <div style="display:flex;flex-direction:column;gap:6px"><span class="big" style="font-size:40px">${inr(spent)}</span>
-      ${budget ? `<span style="font-size:15px;font-weight:500;color:${spent > budget ? "var(--over)" : "var(--ok)"}">${inr(Math.abs(budget - spent))} ${spent > budget ? "over" : "under"} your ${inr(budget)} budget</span>` : ""}</div>
+      ${budget ? `<span style="font-size:15px;font-weight:500;color:${spent > budget ? "var(--over)" : "var(--ok)"}">${inr(Math.abs(budget - spent))} ${spent > budget ? "over" : "under"} ${state.who === "home" ? "the combined" : state.who === me() ? "your" : "their"} ${inr(budget)} budget</span>` : ""}</div>
     <div class="card"><span class="eyebrow">In plain words</span>
-      ${summarySentences(all, state.prev).map((s) => `<p style="margin:0;font-size:15px;line-height:1.5">${esc(s)}</p>`).join("")}</div>
+      ${summarySentences(all, viewList(state.prev)).map((s) => `<p style="margin:0;font-size:15px;line-height:1.5">${esc(s)}</p>`).join("")}</div>
     ${ranked.length ? `<div style="display:flex;flex-direction:column;gap:12px"><span class="eyebrow">Where it went</span><div class="hbars">
       ${ranked.map(([n, a]) => `<div class="hbar"><span style="display:flex;align-items:center;gap:8px;min-width:0">${dot(n)}<span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(n)}</span></span><div class="bar" style="height:10px;background:var(--soft)" aria-hidden="true"><div style="width:${Math.round(a / max * 100)}%;background:${catColor(n)}"></div></div><span class="dim" style="text-align:right">${inr(a)}</span></div>`).join("")}
       </div></div>` : ""}
@@ -348,12 +394,12 @@ function summaryView() {
 
 function settingsView() {
   return `<div class="wrap">
-    <span class="eyebrow">Categories &amp; monthly budgets</span>
-    <p class="muted" style="margin:0;font-size:13px;line-height:1.5">Leave a budget at 0 if you don't want a limit. Removing a category keeps its past entries.</p>
+    <span class="eyebrow">Categories &amp; your monthly budgets</span>
+    <p class="muted" style="margin:0;font-size:13px;line-height:1.5">Categories are shared by the house; the budgets here are ${esc(userName(me()))}'s own. Leave a budget at 0 for no limit. Removing a category keeps its past entries.</p>
     <div id="catList" style="display:flex;flex-direction:column;gap:8px">
       ${cats.map((c, i) => `<div class="catrow">
         <input class="field" data-i="${i}" data-k="name" value="${esc(c.name)}" maxlength="40" aria-label="Category name">
-        <input class="field" data-i="${i}" data-k="budget" value="${c.budget || ""}" inputmode="numeric" placeholder="₹0" aria-label="Monthly budget for ${esc(c.name)}">
+        <input class="field" data-i="${i}" data-k="budget" value="${budgetOf(c, me()) || ""}" inputmode="numeric" placeholder="₹0" aria-label="Your monthly budget for ${esc(c.name)}">
         <button class="iconbtn" data-act="rmCat" data-i="${i}" aria-label="Remove ${esc(c.name)}"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg></button></div>`).join("")}
     </div>
     <div style="display:flex;gap:8px"><button class="ghost" data-act="addCatRow" style="flex:1">+ Add category</button>
@@ -369,8 +415,8 @@ function settingsView() {
     <span class="eyebrow" style="margin-top:12px">Backup</span>
     <button class="ghost" data-act="export">Download all entries (CSV)</button>
     <span class="eyebrow" style="margin-top:12px">This device</span>
-    <p class="muted" style="margin:0;font-size:13px;word-break:break-all">Connected to ${esc(cfg.api)}</p>
-    <button class="ghost" data-act="logout">Lock this device (forget PIN)</button></div>`;
+    <p class="muted" style="margin:0;font-size:13px;word-break:break-all">Signed in as <strong style="color:var(--text)">${esc(userName(me()))}</strong> · ${esc(cfg.api)}</p>
+    <button class="ghost" data-act="logout">Sign out of this device</button></div>`;
 }
 
 // ---------------- actions ----------------
@@ -382,7 +428,8 @@ function readCatRows(listId = "catList") {
   });
 }
 async function saveCatsList(list, msg, kind = "expense") {
-  const clean = list.filter((c) => c.name);
+  // rows from Settings carry this person's budget; rows straight from the server carry everyone's
+  const clean = list.filter((c) => c.name).map((c) => ({ name: c.name, budget: c.budgets ? budgetOf(c, me()) : c.budget || 0 }));
   const names = clean.map((c) => c.name.toLowerCase());
   if (!clean.length) return toast("Keep at least one category");
   if (new Set(names).size !== names.length) return toast("Two categories have the same name");
@@ -397,11 +444,18 @@ async function saveCatsList(list, msg, kind = "expense") {
 
 async function onAction(btn) {
   const act = btn.dataset.act, a = form();
+  if (act === "pick") { state.pick = btn.dataset.id; const p = $("#sPin").value; render(); $("#sPin").value = p; $("#sPin").focus(); return; }
+  if (act === "who") { state.who = btn.dataset.who; return render(); }
   if (act === "connect") {
     const apiUrl = $("#sApi").value.trim().replace(/\/+$/, ""), pin = $("#sPin").value.trim();
-    if (!/^https:\/\//.test(apiUrl) || !pin) { $("#sErr").textContent = "Enter the https:// address and your PIN."; return; }
+    if (!/^https:\/\//.test(apiUrl) || !pin) { $("#sErr").textContent = "Enter your PIN."; return; }
     cfg = { api: apiUrl, pin };
-    try { await api("/api/ping"); LS.set("em.cfg", cfg); await refresh(); }
+    try {
+      const r = await api("/api/me");
+      if (r.user !== state.pick) { cfg = null; $("#sErr").textContent = "That PIN isn't " + userName(state.pick) + "'s."; return; }
+      cfg.user = r.user; users = r.users; LS.set("em.users", users); LS.set("em.cfg", cfg); LS.set("em.api", apiUrl);
+      state.who = "home"; await refresh();
+    }
     catch (e) { cfg = null; $("#nav").classList.add("hidden"); $("#sErr").textContent = e.code ? e.message : "Couldn't reach the server. Check the address."; }
     return;
   }
@@ -437,7 +491,7 @@ async function onAction(btn) {
       when = a.date === a.origDate ? o : new Date(y, m - 1, d, o.getHours(), o.getMinutes());
     } else when = a.date === todayStr() ? now : new Date(y, m - 1, d, 12, 0);
     const inc = a.kind === "income";
-    const e = { id: state.edit ? a.id : crypto.randomUUID(), ts: when.getTime(), amount, category: a.cat, mode: inc ? "" : a.mode, note: a.note.trim(), kind: a.kind };
+    const e = { id: state.edit ? a.id : crypto.randomUUID(), ts: when.getTime(), amount, category: a.cat, mode: inc ? "" : a.mode, note: a.note.trim(), kind: a.kind, owner: me() };
     queue = queue.filter((q) => q.id !== e.id).concat([e]); LS.set("em.queue", queue);
     if (state.edit) {
       state.expenses = state.expenses.filter((x) => x.id !== e.id);
@@ -459,7 +513,7 @@ async function onAction(btn) {
   }
   if (act === "openEntry") {
     const e = state.expenses.find((x) => x.id === btn.dataset.id);
-    if (!e) return;
+    if (!e || ownerOf(e) !== me()) return;
     const ds = dateStr(new Date(e.ts));
     state.edit = { kind: e.kind || "expense", id: e.id, amt: String(e.amount), cat: e.category, mode: e.mode === "Card" ? "Debit card" : e.mode || "UPI", note: e.note || "", date: ds, origDate: ds, origTs: e.ts, adding: false, draft: "" };
     window.scrollTo(0, 0); return render();
@@ -489,7 +543,11 @@ async function onAction(btn) {
     } catch (e) { toast(e.code ? e.message : "You're offline — try again when connected"); }
     return;
   }
-  if (act === "logout") { cfg = null; LS.set("em.cfg", null); state.tab = "month"; render(); }
+  if (act === "logout") {
+    if (queue.length) { try { await flushQueue(); } catch (e) {} }
+    if (queue.length) return toast("Some entries haven't synced yet — connect to the internet first");
+    LS.set("em.api", cfg.api); cfg = null; LS.set("em.cfg", null); LS.set("em.month", {}); queue = []; LS.set("em.queue", []); state.tab = "month"; state.who = "home"; state.expenses = []; state.prev = []; render();
+  }
 }
 function keepAddInputs() {
   const n = $("#aNote"), d = $("#aDate"), c = $("#aNew");
