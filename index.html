@@ -93,7 +93,7 @@ let cfg = LS.get("em.cfg", null);           // { api, pin }
 let queue = LS.get("em.queue", []);          // expenses saved while offline
 let cats = LS.get("em.cats", []);            // expense categories [{name, budget}]
 let incCats = LS.get("em.incCats", []);      // income categories [{name}]
-const APP_VERSION = "1.7";
+const APP_VERSION = "1.8";
 // ---- the house: two people, each signed in with their own PIN ----
 let users = LS.get("em.users", [{ id: "shivam", name: "Shivam" }, { id: "wife", name: "Wife" }]);
 const me = () => (cfg && cfg.user) || "shivam";
@@ -132,7 +132,8 @@ const state = {
   expenses: [], prev: [],                    // this month, previous month
   add: { kind: "expense", amt: "0", cat: null, mode: "UPI", note: "", date: "", adding: false, draft: "" },
   edit: null,                               // the entry being edited, if any
-  who: "home",                               // Home | a person
+  who: (cfg && cfg.user) || "home",          // opens on the signed-in person; Home | a person
+  whoTouched: false,
   pick: "shivam",                            // profile chosen on the sign-in screen
 };
 
@@ -190,6 +191,7 @@ async function loadMe() {
   const r = await api("/api/me");
   users = r.users; LS.set("em.users", users);
   if (cfg.user !== r.user) { cfg.user = r.user; LS.set("em.cfg", cfg); }
+  if (!state.whoTouched) state.who = r.user;
 }
 async function loadCats() {
   [cats, incCats] = await Promise.all([api("/api/categories?kind=expense"), api("/api/categories?kind=income")]);
@@ -446,7 +448,7 @@ async function saveCatsList(list, msg, kind = "expense") {
 async function onAction(btn) {
   const act = btn.dataset.act, a = form();
   if (act === "pick") { state.pick = btn.dataset.id; const p = $("#sPin").value; render(); $("#sPin").value = p; $("#sPin").focus(); return; }
-  if (act === "who") { state.who = btn.dataset.who; return render(); }
+  if (act === "who") { state.who = btn.dataset.who; state.whoTouched = true; return render(); }
   if (act === "connect") {
     const apiUrl = $("#sApi").value.trim().replace(/\/+$/, ""), pin = $("#sPin").value.trim();
     if (!/^https:\/\//.test(apiUrl) || !pin) { $("#sErr").textContent = "Enter your PIN."; return; }
@@ -455,7 +457,7 @@ async function onAction(btn) {
       const r = await api("/api/me");
       if (r.user !== state.pick) { cfg = null; $("#sErr").textContent = "That PIN isn't " + userName(state.pick) + "'s."; return; }
       cfg.user = r.user; users = r.users; LS.set("em.users", users); LS.set("em.cfg", cfg); LS.set("em.api", apiUrl);
-      state.who = "home"; await refresh();
+      state.who = r.user; state.whoTouched = false; await refresh();
     }
     catch (e) { cfg = null; $("#nav").classList.add("hidden"); $("#sErr").textContent = e.code ? e.message : "Couldn't reach the server. Check the address."; }
     return;
