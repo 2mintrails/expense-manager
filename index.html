@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -16,6 +16,7 @@
   :root { --bg:#111317; --card:#1A1D23; --line:#2C3038; --soft:#22262D; --text:#ECEEF1; --muted:#9AA3AE; --dim:#B7BEC7;
           --accent:#F2B354; --ok:#5EC4B6; --over:#FF8A65; }
   * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body, button { touch-action:manipulation; -webkit-text-size-adjust:100%; }  /* no double-tap zoom, fast taps */
   html, body { margin:0; background:var(--bg); color:var(--text); font-family:Inter, system-ui, sans-serif; }
   body { padding: env(safe-area-inset-top) 0 calc(76px + env(safe-area-inset-bottom)); min-height:100vh; }
   button, input { font-family:inherit; font-size:inherit; color:inherit; }
@@ -92,7 +93,7 @@ let cfg = LS.get("em.cfg", null);           // { api, pin }
 let queue = LS.get("em.queue", []);          // expenses saved while offline
 let cats = LS.get("em.cats", []);            // expense categories [{name, budget}]
 let incCats = LS.get("em.incCats", []);      // income categories [{name}]
-const APP_VERSION = "1.6";
+const APP_VERSION = "1.7";
 // ---- the house: two people, each signed in with their own PIN ----
 let users = LS.get("em.users", [{ id: "shivam", name: "Shivam" }, { id: "wife", name: "Wife" }]);
 const me = () => (cfg && cfg.user) || "shivam";
@@ -318,7 +319,7 @@ function addView(a = state.add, editing = false) {
   const seg = `<div class="seg"><button data-act="kind" data-kind="expense" class="${inc ? "" : "on"}">Expense</button><button data-act="kind" data-kind="income" class="${inc ? "on" : ""}">Income</button></div>`;
   return `<div class="wrap ${inc ? "inc" : ""}">
     <div class="row">${editing ? `<button class="ghost" data-act="cancelEdit" aria-label="Cancel editing" style="border:none;padding:0 6px 0 0;color:var(--dim);font-size:26px">‹</button>` : ""}${seg}
-      <input id="aDate" type="date" value="${esc(a.date)}" max="${todayStr()}" aria-label="Date" style="background:none;border:none;color:var(--muted);font-size:13px;text-align:right"></div>
+      <input id="aDate" type="date" value="${esc(a.date)}" max="${todayStr()}" aria-label="Date" style="background:none;border:none;color:var(--muted);font-size:16px;text-align:right;max-width:150px"></div>
     <div style="display:flex;flex-direction:column;align-items:center;gap:4px;padding:2px 0">
       <span id="aAmt" class="big" style="font-size:48px">${inr(Number(a.amt))}</span>
       <span style="font-size:14px;color:var(--accent);font-weight:500">${esc(a.cat || "Pick a category")} · ${inc ? "income" : esc(a.mode)}</span></div>
@@ -576,6 +577,11 @@ async function checkForUpdate() {
   } catch (e) {}
 }
 document.addEventListener("visibilitychange", () => { if (!document.hidden) checkForUpdate(); });
+
+// ---------------- no pinch-zoom ----------------
+// iPhone Safari ignores the viewport setting, so block the zoom gestures directly.
+["gesturestart", "gesturechange", "gestureend"].forEach((t) => document.addEventListener(t, (e) => e.preventDefault(), { passive: false }));
+document.addEventListener("touchmove", (e) => { if (e.touches.length > 1) e.preventDefault(); }, { passive: false });
 
 // ---------------- start ----------------
 if (cfg && monthCache.key === monthKey(state.view)) { state.expenses = monthCache.cur || []; state.prev = monthCache.prev || []; }
