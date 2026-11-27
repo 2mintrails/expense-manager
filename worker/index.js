@@ -107,6 +107,14 @@ export class Store extends DurableObject {
     return this.sql.exec(`SELECT id, ts, amount, category, mode, note, kind, owner FROM expenses
       WHERE ts >= ? AND ts < ? ORDER BY ts DESC`, from, to).toArray();
   }
+  // Display names: each person can rename themselves in Settings.
+  names() {
+    return Object.fromEntries(USERS.map((u) => [u.id, this.meta("name:" + u.id, u.name)]));
+  }
+  setName(id, name) {
+    this.setMeta("name:" + id, name);
+    return this.names();
+  }
   ownerOf(id) {
     const row = this.sql.exec(`SELECT owner FROM expenses WHERE id = ?`, id).toArray()[0];
     return row ? row.owner : null;
@@ -212,8 +220,14 @@ export default {
     const path = url.pathname;
     try {
       if (path === "/api/ping" && request.method === "GET") return json({ ok: true }, 200, headers);
-      if (path === "/api/me" && request.method === "GET")
-        return json({ user: user.id, name: user.name, users: USERS.map((u) => ({ id: u.id, name: u.name, ready: !!env[u.pinVar] })) }, 200, headers);
+      const meReply = (names) => ({ user: user.id, name: names[user.id], users: USERS.map((u) => ({ id: u.id, name: names[u.id], ready: !!env[u.pinVar] })) });
+      if (path === "/api/me" && request.method === "GET") return json(meReply(await store.names()), 200, headers);
+      if (path === "/api/me" && request.method === "PUT") {
+        const body = await request.json().catch(() => ({}));
+        const name = cleanText(body.name, 24);
+        if (!name) return json({ error: "bad name" }, 400, headers);
+        return json(meReply(await store.setName(user.id, name)), 200, headers);
+      }
 
       const kind = KINDS.includes(url.searchParams.get("kind")) ? url.searchParams.get("kind") : "expense";
       if (path === "/api/categories" && request.method === "GET")
@@ -244,7 +258,7 @@ export default {
 
       if (path === "/api/export" && request.method === "GET") {
         const rows = await store.allExpenses();
-        const names = Object.fromEntries(USERS.map((u) => [u.id, u.name]));
+        const names = await store.names();
         const lines = ["date,time,person,type,amount,category,mode,note"];
         for (const r of rows) {
           const d = new Date(r.ts + 5.5 * 3600 * 1000); // shown in India time

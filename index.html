@@ -93,7 +93,7 @@ let cfg = LS.get("em.cfg", null);           // { api, pin }
 let queue = LS.get("em.queue", []);          // expenses saved while offline
 let cats = LS.get("em.cats", []);            // expense categories [{name, budget}]
 let incCats = LS.get("em.incCats", []);      // income categories [{name}]
-const APP_VERSION = "1.8";
+const APP_VERSION = "1.9";
 // ---- the house: two people, each signed in with their own PIN ----
 let users = LS.get("em.users", [{ id: "shivam", name: "Shivam" }, { id: "wife", name: "Wife" }]);
 const me = () => (cfg && cfg.user) || "shivam";
@@ -415,6 +415,9 @@ function settingsView() {
     </div>
     <div style="display:flex;gap:8px"><button class="ghost" data-act="addCatRow" data-list="incList" style="flex:1">+ Add category</button>
       <button class="ghost" data-act="saveCats" data-list="incList" style="flex:1;background:var(--ok);color:#111317;border:none;font-weight:600">Save changes</button></div>
+    <span class="eyebrow" style="margin-top:12px">Your name</span>
+    <div style="display:flex;gap:8px"><input id="myName" class="field" maxlength="24" value="${esc(userName(me()))}" aria-label="Your name">
+      <button class="ghost" data-act="saveName" style="background:var(--accent);color:#111317;border:none;font-weight:600">Save</button></div>
     <span class="eyebrow" style="margin-top:12px">Backup</span>
     <button class="ghost" data-act="export">Download all entries (CSV)</button>
     <span class="eyebrow" style="margin-top:12px">This device</span>
@@ -535,6 +538,13 @@ async function onAction(btn) {
   if (act === "addCatRow") { setList(readCatRows(listId).concat([{ name: "", budget: 0 }])); render(); const last = document.querySelectorAll("#" + listId + ' [data-k="name"]'); last[last.length - 1].focus(); return; }
   if (act === "rmCat") { const rows = readCatRows(listId); rows.splice(Number(btn.dataset.i), 1); setList(rows); return render(); }
   if (act === "saveCats") return saveCatsList(readCatRows(listId), "Saved", listKind);
+  if (act === "saveName") {
+    const n = $("#myName").value.trim().slice(0, 24);
+    if (!n) return toast("Enter a name");
+    try { const r = await api("/api/me", { method: "PUT", body: JSON.stringify({ name: n }) }); users = r.users; LS.set("em.users", users); toast("Name saved"); }
+    catch (e) { toast(e.code ? e.message : "You're offline — try again when connected"); }
+    return render();
+  }
   if (act === "export") {
     try {
       const csv = await api("/api/export");

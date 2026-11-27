@@ -33,7 +33,7 @@ It shows this month against your budgets, a month-end summary in plain words, an
 
 ## Two people (Home)
 
-Shivam and Wife each sign in with their own PIN, so every entry is tagged to whoever added it.
+Shivam and Wife (each can rename themselves in Settings → Your name) sign in with their own PIN, so every entry is tagged to whoever added it.
 The **Home | Shivam | Wife** switch on Month and Summary shows both of you added up, or one person.
 You can see each other's entries but only edit your own. Category names are shared; budgets are per person (Home adds them up).
 
