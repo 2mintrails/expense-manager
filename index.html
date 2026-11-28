@@ -18,7 +18,11 @@
   * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
   html, body, button { touch-action:manipulation; -webkit-text-size-adjust:100%; }  /* no double-tap zoom, fast taps */
   html, body { margin:0; background:var(--bg); color:var(--text); font-family:Inter, system-ui, sans-serif; }
-  body { padding: env(safe-area-inset-top) 0 calc(76px + env(safe-area-inset-bottom)); min-height:100vh; }
+  /* App-shell layout: the screen never scrolls; only the content area does, and the
+     tab bar sits under it. This avoids iPhone's bug where a fixed bar drifts mid-screen. */
+  html, body { height:100%; overflow:hidden; }
+  body { display:flex; flex-direction:column; height:100vh; height:100dvh; padding-top:env(safe-area-inset-top); box-sizing:border-box; }
+  #app { flex:1 1 auto; min-height:0; overflow-y:auto; -webkit-overflow-scrolling:touch; overscroll-behavior:contain; }
   button, input { font-family:inherit; font-size:inherit; color:inherit; }
   button { cursor:pointer; }
   .wrap { max-width:480px; margin:0 auto; padding:14px 20px 20px; display:flex; flex-direction:column; gap:16px; }
@@ -50,7 +54,7 @@
   .entry { display:flex; justify-content:space-between; align-items:center; padding:10px 0; border-bottom:1px solid var(--soft); width:100%; background:none; border-left:none; border-right:none; border-top:none; text-align:left; }
   .entry small { display:block; font-size:12px; color:var(--muted); margin-top:2px; }
   .del { height:36px; padding:0 14px; border-radius:10px; border:1px solid var(--over); background:transparent; color:var(--over); font-size:13px; }
-  nav { position:fixed; left:0; right:0; bottom:0; background:rgba(17,19,23,.96); border-top:1px solid var(--soft);
+  nav { flex-shrink:0; background:rgba(17,19,23,.96); border-top:1px solid var(--soft);
         padding:8px 12px calc(8px + env(safe-area-inset-bottom)); display:flex; justify-content:space-around; }
   nav button { flex:1; height:52px; border:none; background:none; color:var(--muted); font-size:12px; font-weight:500;
                display:flex; flex-direction:column; align-items:center; justify-content:center; gap:3px; }
@@ -93,7 +97,7 @@ let cfg = LS.get("em.cfg", null);           // { api, pin }
 let queue = LS.get("em.queue", []);          // expenses saved while offline
 let cats = LS.get("em.cats", []);            // expense categories [{name, budget}]
 let incCats = LS.get("em.incCats", []);      // income categories [{name}]
-const APP_VERSION = "1.9";
+const APP_VERSION = "2.0";
 // ---- the house: two people, each signed in with their own PIN ----
 let users = LS.get("em.users", [{ id: "shivam", name: "Shivam" }, { id: "wife", name: "Wife" }]);
 const me = () => (cfg && cfg.user) || "shivam";
@@ -522,7 +526,7 @@ async function onAction(btn) {
     if (!e || ownerOf(e) !== me()) return;
     const ds = dateStr(new Date(e.ts));
     state.edit = { kind: e.kind || "expense", id: e.id, amt: String(e.amount), cat: e.category, mode: e.mode === "Card" ? "Debit card" : e.mode || "UPI", note: e.note || "", date: ds, origDate: ds, origTs: e.ts, adding: false, draft: "" };
-    window.scrollTo(0, 0); return render();
+    render(); $("#app").scrollTop = 0; return;
   }
   if (act === "cancelEdit") { state.edit = null; return render(); }
   if (act === "delete") {
@@ -570,7 +574,7 @@ function keepAddInputs() {
 
 document.addEventListener("click", (ev) => {
   const tab = ev.target.closest("nav button");
-  if (tab) { keepAddInputs(); state.tab = tab.dataset.tab; state.edit = null; render(); if (tab.dataset.tab !== "add") refresh(true); return; }
+  if (tab) { keepAddInputs(); state.tab = tab.dataset.tab; state.edit = null; render(); $("#app").scrollTop = 0; if (tab.dataset.tab !== "add") refresh(true); return; }
   const btn = ev.target.closest("[data-act]");
   if (btn) onAction(btn);
 });
