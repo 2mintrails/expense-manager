@@ -97,7 +97,7 @@ let cfg = LS.get("em.cfg", null);           // { api, pin }
 let queue = LS.get("em.queue", []);          // expenses saved while offline
 let cats = LS.get("em.cats", []);            // expense categories [{name, budget}]
 let incCats = LS.get("em.incCats", []);      // income categories [{name}]
-const APP_VERSION = "2.0";
+const APP_VERSION = "2.1";
 // ---- the house: two people, each signed in with their own PIN ----
 let users = LS.get("em.users", [{ id: "shivam", name: "Shivam" }, { id: "wife", name: "Wife" }]);
 const me = () => (cfg && cfg.user) || "shivam";
@@ -132,7 +132,7 @@ let monthCache = LS.get("em.month", {});     // last loaded month, for instant s
 
 const state = {
   tab: "month",
-  view: startOfMonth(new Date()),            // month shown on Month / Summary
+  offset: 0,                                 // which month: 0 = current, -1 = last, …
   expenses: [], prev: [],                    // this month, previous month
   add: { kind: "expense", amt: "0", cat: null, mode: "UPI", note: "", date: "", adding: false, draft: "" },
   edit: null,                               // the entry being edited, if any
@@ -150,6 +150,34 @@ function addMonths(d, n) { return new Date(d.getFullYear(), d.getMonth() + n, 1)
 function monthName(d) { return d.toLocaleString("en-IN", { month: "long" }); }
 function monthKey(d) { return d.getFullYear() + "-" + (d.getMonth() + 1); }
 function sameMonth(a, b) { return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth(); }
+// ---- each person's month runs from their own start day (1–28), e.g. 25 Nov – 24 Dec ----
+const startDay = (uid) => Math.min(28, Math.max(1, Number((users.find((u) => u.id === uid) || {}).start) || 1));
+function cycleOf(uid, offset = state.offset) {
+  const S = startDay(uid), t = new Date();
+  const base = t.getDate() >= S ? new Date(t.getFullYear(), t.getMonth(), S) : new Date(t.getFullYear(), t.getMonth() - 1, S);
+  const start = new Date(base.getFullYear(), base.getMonth() + offset, S);
+  return { start, end: new Date(start.getFullYear(), start.getMonth() + 1, S) };
+}
+const inCycle = (e, offset = state.offset) => { const c = cycleOf(ownerOf(e), offset); return e.ts >= c.start.getTime() && e.ts < c.end.getTime(); };
+const fmtDay = (d) => d.toLocaleDateString("en-IN", { day: "numeric", month: "short" });
+function cycleLabel(uid) {
+  const c = cycleOf(uid);
+  return startDay(uid) === 1 ? c.start.toLocaleString("en-IN", { month: "long", year: "numeric" }) : fmtDay(c.start) + " – " + fmtDay(new Date(c.end.getTime() - 864e5));
+}
+function daysLeftFor(uid) {
+  if (state.offset !== 0) return 0;
+  const t = new Date(), today = new Date(t.getFullYear(), t.getMonth(), t.getDate());
+  return Math.round((cycleOf(uid).end - today) / 864e5);
+}
+const sameStarts = () => new Set(users.map((u) => startDay(u.id))).size === 1;
+// the heading for the month on screen
+function periodLabel() {
+  if (state.who !== "home") return cycleLabel(state.who);
+  if (sameStarts()) return cycleLabel(me());
+  return state.offset === 0 ? "This month" : state.offset === -1 ? "Last month" : -state.offset + " months ago";
+}
+const homeCycles = () => users.map((u) => esc(u.name) + " " + esc(cycleLabel(u.id))).join(" · ");
+const cacheKey = () => users.map((u) => u.id + ":" + startDay(u.id)).join(",") + "@" + new Date().toDateString();
 function dateStr(d) { return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"); }
 function todayStr() { return dateStr(new Date()); }
 const form = () => state.edit || state.add;
@@ -177,19 +205,19 @@ async function api(path, opts = {}) {
   if (!res.ok) throw new Error("Server error (" + res.status + ")");
   return path === "/api/export" ? res.text() : res.json();
 }
-function range(d) { return "from=" + d.getTime() + "&to=" + addMonths(d, 1).getTime(); }
+
 
 async function loadMonth() {
-  const [cur, prev] = await Promise.all([
-    api("/api/expenses?" + range(state.view)),
-    api("/api/expenses?" + range(addMonths(state.view, -1))),
-  ]);
-  // keep offline entries visible until they reach the server
-  const ids = new Set(cur.map((e) => e.id));
-  const mine = queue.filter((e) => !ids.has(e.id) && e.ts >= state.view.getTime() && e.ts < addMonths(state.view, 1).getTime());
-  state.expenses = mine.concat(cur).sort((a, b) => b.ts - a.ts);
-  state.prev = prev;
-  if (sameMonth(state.view, new Date())) { monthCache = { key: monthKey(state.view), cur: state.expenses, prev }; LS.set("em.month", monthCache); }
+  // one fetch covering everyone's current and previous cycle, then split per person
+  const ids = users.map((u) => u.id);
+  const from = Math.min(...ids.map((u) => cycleOf(u, state.offset - 1).start.getTime()));
+  const to = Math.max(...ids.map((u) => cycleOf(u, state.offset).end.getTime()));
+  const fetched = await api("/api/expenses?from=" + from + "&to=" + to);
+  const seen = new Set(fetched.map((e) => e.id));
+  const all = queue.filter((e) => !seen.has(e.id)).concat(fetched);   // keep offline entries visible
+  state.expenses = all.filter((e) => inCycle(e)).sort((a, b) => b.ts - a.ts);
+  state.prev = all.filter((e) => inCycle(e, state.offset - 1));
+  if (state.offset === 0) { monthCache = { key: cacheKey(), cur: state.expenses, prev: state.prev }; LS.set("em.month", monthCache); }
 }
 async function loadMe() {
   const r = await api("/api/me");
@@ -259,10 +287,15 @@ function monthView() {
   const spent = sum(spends(L)), income = sum(incomes(L));
   const onCC = sum(L.filter(isCC)), fromAccount = spent - onCC;
   const budget = cats.reduce((s, c) => s + budgetOf(c), 0);
-  const isNow = sameMonth(state.view, new Date());
-  const now = new Date();
-  const daysInMonth = new Date(state.view.getFullYear(), state.view.getMonth() + 1, 0).getDate();
-  const daysLeft = isNow ? daysInMonth - now.getDate() + 1 : 0;
+  const isNow = state.offset === 0;
+  // safe to spend today: each person's leftover budget spread over their own days left, added up for Home
+  const ids = home ? users.map((u) => u.id) : [state.who];
+  const safe = ids.reduce((acc, u) => {
+    const bu = cats.reduce((s2, c) => s2 + budgetOf(c, u), 0), su = sum(spends(state.expenses.filter((e) => ownerOf(e) === u)));
+    const dl = daysLeftFor(u);
+    return acc + (bu > su && dl > 0 ? (bu - su) / dl : 0);
+  }, 0);
+  const daysLeft = home ? (sameStarts() ? daysLeftFor(me()) : 0) : daysLeftFor(state.who);
   const left = budget - spent;
   const t = totals(spends(L));
   const names = cats.map((c) => c.name);
@@ -278,7 +311,8 @@ function monthView() {
     ${whoSwitch()}
     ${other ? `<div class="row" style="justify-content:flex-start;gap:8px;background:var(--card);border-radius:12px;padding:10px 12px;font-size:13px;color:var(--dim)"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M2 12s4-7 10-7 10 7 10 7-4 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg>Viewing ${esc(userName(state.who))}'s month · view only</div>` : ""}
     <div class="row"><button class="ghost" data-act="prevMonth" aria-label="Previous month">‹</button>
-      <span class="eyebrow">${esc(monthName(state.view))} ${state.view.getFullYear()}</span>
+      <span style="display:flex;flex-direction:column;align-items:center;gap:2px;text-align:center"><span class="eyebrow">${esc(periodLabel())}</span>
+        ${home && !sameStarts() ? `<span class="muted" style="font-size:11px">${homeCycles()}</span>` : ""}</span>
       <button class="ghost" data-act="nextMonth" aria-label="Next month" ${isNow ? "disabled style='opacity:.3'" : ""}>›</button></div>
     ${income ? `<div class="card">
       <span class="muted" style="font-size:13px">${home ? "Home · left this month" : "Left this month"}</span>
@@ -296,9 +330,9 @@ function monthView() {
         ${budget ? `<span class="muted" style="font-size:14px">of ${inr(budget)}</span>` : ""}</div>
       ${budget ? `<div class="bar" aria-hidden="true"><div style="width:${pct}%;background:${spent > budget ? "var(--over)" : "var(--accent)"}"></div></div>` : ""}
       <div class="row dim" style="font-size:13px">
-        ${budget && isNow ? (left > 0 ? `<span>Safe to spend today: <strong style="color:var(--text)">${inr(left / daysLeft)}</strong></span>` : `<span style="color:var(--over)">${inr(-left)} over budget</span>`)
+        ${budget && isNow ? (left > 0 ? `<span>Safe to spend today: <strong style="color:var(--text)">${inr(safe)}</strong></span>` : `<span style="color:var(--over)">${inr(-left)} over budget</span>`)
           : budget ? `<span>${left >= 0 ? inr(left) + " under budget" : inr(-left) + " over budget"}</span>` : `<span>Set budgets in Settings to track limits</span>`}
-        ${isNow ? `<span>${daysLeft} day${daysLeft === 1 ? "" : "s"} left</span>` : ""}</div>
+        ${isNow && daysLeft ? `<span>${daysLeft} day${daysLeft === 1 ? "" : "s"} left</span>` : ""}</div>
     </div>
     ${rows.length ? `<div style="display:flex;flex-direction:column;gap:12px"><span class="eyebrow">${home ? "Budgets · both of you" : other ? "Their budgets" : "By category"}</span>
       ${rows.map((r) => {
@@ -377,14 +411,15 @@ function summarySentences(all, prevAll) {
 function summaryView() {
   const all = viewList(state.expenses), cur = spends(all);
   const spent = sum(cur), budget = cats.reduce((s, c) => s + budgetOf(c), 0);
-  const isNow = sameMonth(state.view, new Date());
+  const isNow = state.offset === 0;
   const ranked = Object.entries(totals(cur)).sort((a, b) => b[1] - a[1]);
   const max = ranked.length ? ranked[0][1] : 1;
   const biggest = cur.reduce((m, e) => (e.amount > (m ? m.amount : 0) ? e : m), null);
   return `<div class="wrap">
     ${whoSwitch()}
     <div class="row"><button class="ghost" data-act="prevMonth" aria-label="Previous month">‹</button>
-      <span class="eyebrow">${esc(monthName(state.view))} ${isNow ? "so far" : "in review"}</span>
+      <span style="display:flex;flex-direction:column;align-items:center;gap:2px;text-align:center"><span class="eyebrow">${esc(periodLabel())} ${isNow ? "so far" : "in review"}</span>
+        ${state.who === "home" && !sameStarts() ? `<span class="muted" style="font-size:11px">${homeCycles()}</span>` : ""}</span>
       <button class="ghost" data-act="nextMonth" aria-label="Next month" ${isNow ? "disabled style='opacity:.3'" : ""}>›</button></div>
     <div style="display:flex;flex-direction:column;gap:6px"><span class="big" style="font-size:40px">${inr(spent)}</span>
       ${budget ? `<span style="font-size:15px;font-weight:500;color:${spent > budget ? "var(--over)" : "var(--ok)"}">${inr(Math.abs(budget - spent))} ${spent > budget ? "over" : "under"} ${state.who === "home" ? "the combined" : state.who === me() ? "your" : "their"} ${inr(budget)} budget</span>` : ""}</div>
@@ -422,6 +457,11 @@ function settingsView() {
     <span class="eyebrow" style="margin-top:12px">Your name</span>
     <div style="display:flex;gap:8px"><input id="myName" class="field" maxlength="24" value="${esc(userName(me()))}" aria-label="Your name">
       <button class="ghost" data-act="saveName" style="background:var(--accent);color:#111317;border:none;font-weight:600">Save</button></div>
+    <span class="eyebrow" style="margin-top:12px">Your month starts on</span>
+    <div style="display:flex;gap:8px"><select id="myStart" class="field" aria-label="Day your month starts">
+      ${Array.from({ length: 28 }, (_, i) => i + 1).map((d) => `<option value="${d}" ${d === startDay(me()) ? "selected" : ""}>${d === 1 ? "1st (calendar month)" : d + (d === 2 || d === 22 ? "nd" : d === 3 || d === 23 ? "rd" : d === 21 ? "st" : "th") + " of every month"}</option>`).join("")}
+    </select><button class="ghost" data-act="saveStart" style="background:var(--accent);color:#111317;border:none;font-weight:600">Save</button></div>
+    <p class="muted" style="margin:0;font-size:13px;line-height:1.5">Handy if you plan around salary day. Budgets, money left, Summary and comparisons follow your cycle; Home adds up each person's own month.</p>
     <span class="eyebrow" style="margin-top:12px">Backup</span>
     <button class="ghost" data-act="export">Download all entries (CSV)</button>
     <span class="eyebrow" style="margin-top:12px">This device</span>
@@ -505,12 +545,12 @@ async function onAction(btn) {
     queue = queue.filter((q) => q.id !== e.id).concat([e]); LS.set("em.queue", queue);
     if (state.edit) {
       state.expenses = state.expenses.filter((x) => x.id !== e.id);
-      if (sameMonth(new Date(e.ts), state.view)) state.expenses = state.expenses.concat([e]).sort((p, q) => q.ts - p.ts);
+      if (inCycle(e)) state.expenses = state.expenses.concat([e]).sort((p, q) => q.ts - p.ts);
       state.edit = null; render(); toast("Updated " + (inc ? "+" : "") + inr(amount) + " · " + e.category);
       try { await flushQueue(); } catch (err) {}
       return render();
     }
-    if (sameMonth(new Date(e.ts), state.view)) state.expenses = [e].concat(state.expenses).sort((p, q) => q.ts - p.ts);
+    if (inCycle(e)) state.expenses = [e].concat(state.expenses).sort((p, q) => q.ts - p.ts);
     state.add = { kind: a.kind, amt: "0", cat: a.cat, mode: a.mode, note: "", date: todayStr(), adding: false, draft: "" };
     render(); toast("Saved " + (inc ? "+" : "") + inr(amount) + " · " + e.category);
     try { await flushQueue(); } catch (err) {}
@@ -518,7 +558,7 @@ async function onAction(btn) {
     return;
   }
   if (act === "prevMonth" || act === "nextMonth") {
-    state.view = addMonths(state.view, act === "prevMonth" ? -1 : 1);
+    state.offset = Math.min(0, state.offset + (act === "prevMonth" ? -1 : 1));
     state.expenses = []; state.prev = []; render(); return refresh();
   }
   if (act === "openEntry") {
@@ -542,6 +582,12 @@ async function onAction(btn) {
   if (act === "addCatRow") { setList(readCatRows(listId).concat([{ name: "", budget: 0 }])); render(); const last = document.querySelectorAll("#" + listId + ' [data-k="name"]'); last[last.length - 1].focus(); return; }
   if (act === "rmCat") { const rows = readCatRows(listId); rows.splice(Number(btn.dataset.i), 1); setList(rows); return render(); }
   if (act === "saveCats") return saveCatsList(readCatRows(listId), "Saved", listKind);
+  if (act === "saveStart") {
+    const d = Number($("#myStart").value);
+    try { const r = await api("/api/me", { method: "PUT", body: JSON.stringify({ start: d }) }); users = r.users; LS.set("em.users", users); toast("Your month now starts on day " + d); }
+    catch (e) { return toast(e.code ? e.message : "You're offline — try again when connected"); }
+    state.offset = 0; return refresh(true);
+  }
   if (act === "saveName") {
     const n = $("#myName").value.trim().slice(0, 24);
     if (!n) return toast("Enter a name");
@@ -563,7 +609,7 @@ async function onAction(btn) {
   if (act === "logout") {
     if (queue.length) { try { await flushQueue(); } catch (e) {} }
     if (queue.length) return toast("Some entries haven't synced yet — connect to the internet first");
-    LS.set("em.api", cfg.api); cfg = null; LS.set("em.cfg", null); LS.set("em.month", {}); queue = []; LS.set("em.queue", []); state.tab = "month"; state.who = "home"; state.expenses = []; state.prev = []; render();
+    LS.set("em.api", cfg.api); cfg = null; LS.set("em.cfg", null); LS.set("em.month", {}); queue = []; LS.set("em.queue", []); state.tab = "month"; state.who = "home"; state.offset = 0; state.expenses = []; state.prev = []; render();
   }
 }
 function keepAddInputs() {
@@ -600,7 +646,7 @@ document.addEventListener("visibilitychange", () => { if (!document.hidden) chec
 document.addEventListener("touchmove", (e) => { if (e.touches.length > 1) e.preventDefault(); }, { passive: false });
 
 // ---------------- start ----------------
-if (cfg && monthCache.key === monthKey(state.view)) { state.expenses = monthCache.cur || []; state.prev = monthCache.prev || []; }
+if (cfg && monthCache.key === cacheKey()) { state.expenses = monthCache.cur || []; state.prev = monthCache.prev || []; }
 render();
 if (cfg) refresh(true);
 checkForUpdate();

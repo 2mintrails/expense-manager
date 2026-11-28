@@ -115,6 +115,14 @@ export class Store extends DurableObject {
     this.setMeta("name:" + id, name);
     return this.names();
   }
+  // The day each person's month starts (1–28), e.g. salary day.
+  starts() {
+    return Object.fromEntries(USERS.map((u) => [u.id, Number(this.meta("start:" + u.id, 1))]));
+  }
+  setStart(id, day) {
+    this.setMeta("start:" + id, day);
+    return this.starts();
+  }
   ownerOf(id) {
     const row = this.sql.exec(`SELECT owner FROM expenses WHERE id = ?`, id).toArray()[0];
     return row ? row.owner : null;
@@ -220,13 +228,24 @@ export default {
     const path = url.pathname;
     try {
       if (path === "/api/ping" && request.method === "GET") return json({ ok: true }, 200, headers);
-      const meReply = (names) => ({ user: user.id, name: names[user.id], users: USERS.map((u) => ({ id: u.id, name: names[u.id], ready: !!env[u.pinVar] })) });
-      if (path === "/api/me" && request.method === "GET") return json(meReply(await store.names()), 200, headers);
+      const meReply = async () => {
+        const [names, starts] = await Promise.all([store.names(), store.starts()]);
+        return { user: user.id, name: names[user.id], users: USERS.map((u) => ({ id: u.id, name: names[u.id], start: starts[u.id], ready: !!env[u.pinVar] })) };
+      };
+      if (path === "/api/me" && request.method === "GET") return json(await meReply(), 200, headers);
       if (path === "/api/me" && request.method === "PUT") {
         const body = await request.json().catch(() => ({}));
-        const name = cleanText(body.name, 24);
-        if (!name) return json({ error: "bad name" }, 400, headers);
-        return json(meReply(await store.setName(user.id, name)), 200, headers);
+        if (body.name !== undefined) {
+          const name = cleanText(body.name, 24);
+          if (!name) return json({ error: "bad name" }, 400, headers);
+          await store.setName(user.id, name);
+        }
+        if (body.start !== undefined) {
+          const day = Math.round(Number(body.start));
+          if (!(day >= 1 && day <= 28)) return json({ error: "bad start day" }, 400, headers);
+          await store.setStart(user.id, day);
+        }
+        return json(await meReply(), 200, headers);
       }
 
       const kind = KINDS.includes(url.searchParams.get("kind")) ? url.searchParams.get("kind") : "expense";
